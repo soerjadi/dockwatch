@@ -1,0 +1,24 @@
+services:
+  dockwatch:
+    image: dockwatch:latest          # or build: .
+    container_name: dockwatch
+    restart: unless-stopped
+    ports:
+      - "3000:3000"                  # Web UI + REST API + SSE
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      DOCKWATCH_ADDR:             ":3000"
+      DOCKWATCH_LOG_LEVEL:        "info"
+      DOCKWATCH_REGISTRY_CRON:    "0 0 4 * * *"   # last-resort fallback poll: daily at 4 AM
+      DOCKWATCH_HEALTH_GRACE:     "30s"            # health watch window post-update
+      DOCKWATCH_DRY_RUN:          "false"          # set "true" to disable all actions
+      DOCKWATCH_WEBHOOK_SECRET:   "changeme"       # openssl rand -hex 32
+
+  # Example watched container — label controls update strategy
+  nginx:
+    image: nginx:alpine
+    labels:
+      dockwatch.watch:          "true"
+      dockwatch.update:         "patch"    # auto on patch, notify on minor/major
+      dockwatch.health.grace:   "30s"      # override health window for this container
