@@ -32,6 +32,8 @@ import (
 	"github.com/soerjadi/dockwatch/internal/executor"
 	"github.com/soerjadi/dockwatch/internal/healthmon"
 	"github.com/soerjadi/dockwatch/internal/notifier"
+	"github.com/soerjadi/dockwatch/internal/poller"
+	"github.com/soerjadi/dockwatch/internal/registry"
 	"github.com/soerjadi/dockwatch/internal/rollback"
 	"github.com/soerjadi/dockwatch/internal/store"
 	"github.com/soerjadi/dockwatch/internal/watcher"
@@ -76,13 +78,15 @@ func main() {
 	}
 	defer dock.Close()
 
-	w := watcher.New(dock, b, st, log)
+	reg := registry.New()
 
+	w := watcher.New(dock, b, st, log)
 	exec := executor.New(dock, b, st, log)
 	hmon := healthmon.New(dock, b, st, log)
 	rb := rollback.New(dock, b, st, log)
 	ntfy := notifier.New(b, log)
-	srv := api.New(cfg.Addr, b, st, ntfy, cfg.WebhookSecret, log)
+	poll := poller.New(b, st, reg, cfg.RegistryCron, log)
+	srv := api.New(cfg.Addr, b, st, ntfy, reg, cfg.WebhookSecret, log)
 
 	// ── Run all components concurrently ───────────────────────────────────────
 	var wg sync.WaitGroup
@@ -107,6 +111,7 @@ func main() {
 	run("healthmon", func() { hmon.Run(ctx) })
 	run("rollback", func() { rb.Run(ctx) })
 	run("notifier", func() { ntfy.Run(ctx) })
+	run("poller", func() { poll.Run(ctx) })
 	run("api", func() {
 		if err := srv.Run(ctx); err != nil {
 			log.Error("api server error", "err", err)

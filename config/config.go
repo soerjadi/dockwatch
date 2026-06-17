@@ -10,7 +10,7 @@ import (
 // Config holds all runtime configuration for dockwatch.
 type Config struct {
 	// Addr is the address the HTTP/SSE server listens on.
-	// Default: ":3000"
+	// Default: ":3010"
 	Addr string
 
 	// DockerHost overrides the Docker daemon endpoint (e.g.
@@ -47,7 +47,7 @@ type Config struct {
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
 	c := &Config{
-		Addr:          getEnv("DOCKWATCH_ADDR", ":3000"),
+		Addr:          getEnv("DOCKWATCH_ADDR", ":3010"),
 		DockerHost:    getEnv("DOCKWATCH_DOCKER_HOST", ""),
 		LogLevel:      getEnv("DOCKWATCH_LOG_LEVEL", "info"),
 		RegistryCron:  getEnv("DOCKWATCH_REGISTRY_CRON", "0 0 4 * * *"),

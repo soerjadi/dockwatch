@@ -25,6 +25,7 @@ import (
 
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/notifier"
+	"github.com/soerjadi/dockwatch/internal/registry"
 	"github.com/soerjadi/dockwatch/internal/store"
 	"github.com/soerjadi/dockwatch/internal/webhook"
 )
@@ -34,15 +35,16 @@ type Server struct {
 	bus      *bus.Bus
 	store    *store.Store
 	notifier *notifier.Notifier
+	registry *registry.Client
 	log      *slog.Logger
 	server   *http.Server
 }
 
-// New creates an API Server bound to addr (e.g. ":3000").
+// New creates an API Server bound to addr (e.g. ":3010").
 // webhookSecret is the HMAC-SHA256 shared secret for /webhook/push;
 // pass "" to disable signature validation (dev only).
-func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, webhookSecret string, log *slog.Logger) *Server {
-	s := &Server{bus: b, store: st, notifier: n, log: log}
+func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, webhookSecret string, log *slog.Logger) *Server {
+	s := &Server{bus: b, store: st, notifier: n, registry: reg, log: log}
 
 	mux := http.NewServeMux()
 
@@ -130,14 +132,24 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Publish a synthetic image.updated event to trigger the executor.
-	// TODO: fetch latest digest from registry first.
+	current := cs.CurrentDigest()
+	latest, err := s.registry.HeadDigest(r.Context(), cs.Image)
+	if err != nil {
+		s.log.Warn("handleUpdate: registry check failed", "container", cs.Name, "err", err)
+		http.Error(w, "registry check failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if latest == current {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "up to date", "container": cs.Name})
+		return
+	}
 	s.bus.Publish(bus.TopicImageUpdated, bus.ImageUpdatedPayload{
 		ContainerID:   cs.ID,
 		ContainerName: cs.Name,
 		Image:         cs.Image,
-		OldDigest:     cs.CurrentDigest(),
-		NewDigest:     cs.CurrentDigest(), // placeholder until registry check
+		OldDigest:     current,
+		NewDigest:     latest,
 		DetectedAt:    time.Now(),
 	})
 

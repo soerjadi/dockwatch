@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/soerjadi/dockwatch/internal/bus"
+	"github.com/soerjadi/dockwatch/internal/compose"
 	"github.com/soerjadi/dockwatch/internal/dockerclient"
 	"github.com/soerjadi/dockwatch/internal/store"
 )
@@ -87,6 +88,13 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 
 	strategy := strategyFromLabels(cs.Labels)
 
+	// Compose-managed containers are always notify-only. dockwatch detects the
+	// update and emits an event, but never edits compose files or recreates the
+	// container directly. Apply manually: docker compose pull && docker compose up -d
+	if compose.FromLabels(cs.Labels) != nil {
+		strategy = StrategyNotify
+	}
+
 	e.log.Info("update candidate",
 		"container", p.ContainerName,
 		"image", p.Image,
@@ -105,6 +113,7 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 			Image:         p.Image,
 			NewDigest:     p.NewDigest,
 			Reason:        "semver strategy: " + string(strategy),
+			SkippedAt:     time.Now(),
 		})
 		e.log.Info("update skipped", "container", p.ContainerName, "strategy", strategy)
 		return
@@ -116,9 +125,6 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 		return
 	}
 
-	// Recreating the container produced a new ID; move the state (and its
-	// digest ring buffer) so rollback can still find the previous digest, then
-	// record the newly-applied digest.
 	moved := e.store.Rekey(p.ContainerID, newID)
 	if moved == nil {
 		moved = cs
@@ -215,15 +221,17 @@ func shortDigest(d string) string {
 	return d
 }
 
-// apply pulls the new image and recreates the container against it, returning
-// the new container ID. The pull/stop/remove/create/start sequence is composed
-// from the scoped client's primitives by dockerclient.Recreate.
+// apply updates the container to the new image. For compose-managed containers
+// it patches the compose file and delegates to `docker compose up`; for all
+// others it uses the direct Docker API path (Recreate). Returns the new
+// container ID for the direct path, or "" for the compose path (the watcher
+// rebuilds state from the container:start event that compose triggers).
 func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload) (string, error) {
 	ref := imageRef(p.Image, p.NewDigest)
 	e.log.Info("applying update",
 		"container", p.ContainerName,
 		"image", p.Image,
-		"digest", p.NewDigest[:16],
+		"digest", shortDigest(p.NewDigest),
 		"ref", ref,
 	)
 	return dockerclient.Recreate(ctx, e.docker, p.ContainerID, ref)
