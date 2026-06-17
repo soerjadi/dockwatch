@@ -20,6 +20,7 @@ import (
 	"github.com/soerjadi/dockwatch/internal/compose"
 	"github.com/soerjadi/dockwatch/internal/dockerclient"
 	"github.com/soerjadi/dockwatch/internal/github"
+	"github.com/soerjadi/dockwatch/internal/history"
 	"github.com/soerjadi/dockwatch/internal/store"
 )
 
@@ -40,16 +41,17 @@ const (
 
 // Executor subscribes to image.updated events and applies updates.
 type Executor struct {
-	bus    *bus.Bus
-	store  *store.Store
-	docker dockerclient.Scoped
-	gh     *github.Client
-	log    *slog.Logger
+	bus     *bus.Bus
+	store   *store.Store
+	docker  dockerclient.Scoped
+	gh      *github.Client
+	history *history.Store
+	log     *slog.Logger
 }
 
 // New creates an Executor.
-func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, log *slog.Logger) *Executor {
-	return &Executor{bus: b, store: st, docker: docker, gh: gh, log: log}
+func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, log *slog.Logger) *Executor {
+	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, log: log}
 }
 
 // Run starts the executor loop. Blocks until ctx is cancelled.
@@ -145,6 +147,18 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 		moved = cs
 	}
 	moved.PushDigest(p.Image, p.NewDigest)
+
+	if e.history != nil {
+		if _, err := e.history.Record(history.Entry{
+			AppName:   p.ContainerName,
+			Service:   p.ContainerName,
+			OldImage:  cs.Image,
+			NewImage:  p.Image,
+			CreatedAt: time.Now(),
+		}); err != nil {
+			e.log.Warn("history: failed to record update", "container", p.ContainerName, "err", err)
+		}
+	}
 
 	e.bus.Publish(bus.TopicUpdateApplied, bus.UpdateAppliedPayload{
 		ContainerID:   newID,

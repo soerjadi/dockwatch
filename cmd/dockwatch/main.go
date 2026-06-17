@@ -32,6 +32,7 @@ import (
 	"github.com/soerjadi/dockwatch/internal/executor"
 	"github.com/soerjadi/dockwatch/internal/github"
 	"github.com/soerjadi/dockwatch/internal/healthmon"
+	"github.com/soerjadi/dockwatch/internal/history"
 	"github.com/soerjadi/dockwatch/internal/notifier"
 	"github.com/soerjadi/dockwatch/internal/poller"
 	"github.com/soerjadi/dockwatch/internal/registry"
@@ -82,13 +83,20 @@ func main() {
 	reg := registry.New()
 	gh := github.New(cfg.GitHubToken)
 
+	hist, err := history.Open(cfg.HistoryDBPath, cfg.HistoryDir)
+	if err != nil {
+		log.Error("failed to open history store", "err", err)
+		os.Exit(1)
+	}
+	defer hist.Close()
+
 	w := watcher.New(dock, b, st, log)
-	exec := executor.New(dock, b, st, gh, log)
+	exec := executor.New(dock, b, st, gh, hist, log)
 	hmon := healthmon.New(dock, b, st, log)
 	rb := rollback.New(dock, b, st, log)
 	ntfy := notifier.New(b, log)
 	poll := poller.New(b, st, reg, cfg.RegistryCron, log)
-	srv := api.New(cfg.Addr, b, st, ntfy, reg, cfg.WebhookSecret, log)
+	srv := api.New(cfg.Addr, b, st, ntfy, reg, hist, cfg.WebhookSecret, log)
 
 	// ── Run all components concurrently ───────────────────────────────────────
 	var wg sync.WaitGroup

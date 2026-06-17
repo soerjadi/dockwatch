@@ -2,11 +2,12 @@
 //
 // Endpoints:
 //
-//	GET  /healthz                — liveness probe
-//	GET  /api/containers         — list all tracked containers + current state
-//	POST /api/update/:id         — manually trigger an update check
-//	POST /api/rollback/:id       — manually trigger a rollback
-//	GET  /api/events             — SSE stream of all bus events (real-time UI)
+//	GET  /healthz                    — liveness probe
+//	GET  /api/containers             — list all tracked containers + current state
+//	POST /api/update/:id             — manually trigger an update check
+//	POST /api/rollback/:id           — manually trigger a rollback
+//	GET  /api/events                 — SSE stream of all bus events (real-time UI)
+//	GET  /api/history                — list update history (optional ?service=<name>)
 //
 // Webhook endpoints (inbound push from CI/CD — no polling needed):
 //
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/soerjadi/dockwatch/internal/bus"
+	"github.com/soerjadi/dockwatch/internal/history"
 	"github.com/soerjadi/dockwatch/internal/notifier"
 	"github.com/soerjadi/dockwatch/internal/registry"
 	"github.com/soerjadi/dockwatch/internal/store"
@@ -36,6 +38,7 @@ type Server struct {
 	store    *store.Store
 	notifier *notifier.Notifier
 	registry *registry.Client
+	history  *history.Store
 	log      *slog.Logger
 	server   *http.Server
 }
@@ -43,8 +46,8 @@ type Server struct {
 // New creates an API Server bound to addr (e.g. ":3010").
 // webhookSecret is the HMAC-SHA256 shared secret for /webhook/push;
 // pass "" to disable signature validation (dev only).
-func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, webhookSecret string, log *slog.Logger) *Server {
-	s := &Server{bus: b, store: st, notifier: n, registry: reg, log: log}
+func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, hist *history.Store, webhookSecret string, log *slog.Logger) *Server {
+	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, log: log}
 
 	mux := http.NewServeMux()
 
@@ -53,6 +56,7 @@ func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *re
 	mux.HandleFunc("/api/containers", s.handleContainers)
 	mux.HandleFunc("/api/update/", s.handleUpdate)
 	mux.HandleFunc("/api/rollback/", s.handleRollback)
+	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/events", s.handleSSE)
 
 	// Inbound webhooks — CI/CD pushes here instead of dockwatch polling
@@ -187,6 +191,40 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "rollback triggered", "container": cs.Name})
+}
+
+// handleHistory returns the update history, optionally filtered by service name.
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.history == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]struct{}{})
+		return
+	}
+
+	service := r.URL.Query().Get("service")
+	var (
+		entries []history.Entry
+		err     error
+	)
+	if service != "" {
+		entries, err = s.history.List(service)
+	} else {
+		entries, err = s.history.ListAll()
+	}
+	if err != nil {
+		s.log.Error("handleHistory: db query failed", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []history.Entry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(entries)
 }
 
 // handleSSE streams all bus events to the browser as Server-Sent Events.

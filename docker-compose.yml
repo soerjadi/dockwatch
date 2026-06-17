@@ -7,6 +7,7 @@ services:
       - "3010:3010"                  # Web UI + REST API + SSE
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data:/data                              # persists SQLite DB and compose file backups
     environment:
       DOCKWATCH_ADDR:             ":3010"
       DOCKWATCH_LOG_LEVEL:        "info"

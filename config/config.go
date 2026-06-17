@@ -47,6 +47,16 @@ type Config struct {
 	// release notes for breaking-change enrichment. Without a token, the GitHub
 	// API allows 60 unauthenticated requests per hour; with one, 5000 req/hr.
 	GitHubToken string
+
+	// HistoryDBPath is the path to the SQLite database used to persist update
+	// history. The directory is created on startup if it doesn't exist.
+	// Default: "/data/dockwatch.db"
+	HistoryDBPath string
+
+	// HistoryDir is the directory where compose file backups are stored before
+	// each update so that rollbacks can restore the exact prior state.
+	// Default: "/data/history"
+	HistoryDir string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -60,6 +70,8 @@ func Load() *Config {
 		DryRun:        getBool("DOCKWATCH_DRY_RUN", false),
 		WebhookSecret: getEnv("DOCKWATCH_WEBHOOK_SECRET", ""),
 		GitHubToken:   getEnv("GITHUB_TOKEN", ""),
+		HistoryDBPath: getEnv("DOCKWATCH_HISTORY_DB", "/data/dockwatch.db"),
+		HistoryDir:    getEnv("DOCKWATCH_HISTORY_DIR", "/data/history"),
 	}
 	return c
 }
