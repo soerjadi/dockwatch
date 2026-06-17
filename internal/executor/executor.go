@@ -35,8 +35,9 @@ const (
 )
 
 const (
-	labelKey   = "dockwatch.update" // update strategy
-	labelWatch = "dockwatch.watch"  // opt-out: set "false" to exclude container
+	labelKey           = "dockwatch.update"         // update strategy
+	labelWatch         = "dockwatch.watch"           // opt-out: set "false" to exclude container
+	labelComposeUpdate = "dockwatch.compose.update"  // "auto" enables compose-first path
 )
 
 // Executor subscribes to image.updated events and applies updates.
@@ -92,11 +93,12 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 
 	strategy := strategyFromLabels(cs.Labels)
 
-	// Compose-managed containers are always notify-only. dockwatch detects the
-	// update and emits an event, but never edits compose files or recreates the
-	// container directly. Apply manually: docker compose pull && docker compose up -d
-	if compose.FromLabels(cs.Labels) != nil {
-		strategy = StrategyNotify
+	// Compose-managed containers: default to notify-only unless the user has
+	// explicitly opted in to the compose-first auto-update path via label.
+	if info := compose.FromLabels(cs.Labels); info != nil {
+		if cs.Labels[labelComposeUpdate] != "auto" {
+			strategy = StrategyNotify
+		}
 	}
 
 	e.log.Info("update candidate",
@@ -136,25 +138,29 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 		return
 	}
 
-	newID, err := e.apply(ctx, p)
+	newID, backupPath, err := e.apply(ctx, p, cs)
 	if err != nil {
 		e.log.Error("update failed", "container", p.ContainerName, "err", err)
 		return
 	}
 
-	moved := e.store.Rekey(p.ContainerID, newID)
-	if moved == nil {
-		moved = cs
+	// For the compose path newID is "" — watcher rebuilds state on container:start.
+	if newID != "" {
+		moved := e.store.Rekey(p.ContainerID, newID)
+		if moved == nil {
+			moved = cs
+		}
+		moved.PushDigest(p.Image, p.NewDigest)
 	}
-	moved.PushDigest(p.Image, p.NewDigest)
 
 	if e.history != nil {
 		if _, err := e.history.Record(history.Entry{
-			AppName:   p.ContainerName,
-			Service:   p.ContainerName,
-			OldImage:  cs.Image,
-			NewImage:  p.Image,
-			CreatedAt: time.Now(),
+			AppName:    p.ContainerName,
+			Service:    p.ContainerName,
+			OldImage:   cs.Image,
+			NewImage:   p.Image,
+			BackupPath: backupPath,
+			CreatedAt:  time.Now(),
 		}); err != nil {
 			e.log.Warn("history: failed to record update", "container", p.ContainerName, "err", err)
 		}
@@ -250,12 +256,29 @@ func shortDigest(d string) string {
 	return d
 }
 
-// apply updates the container to the new image. For compose-managed containers
-// it patches the compose file and delegates to `docker compose up`; for all
-// others it uses the direct Docker API path (Recreate). Returns the new
-// container ID for the direct path, or "" for the compose path (the watcher
-// rebuilds state from the container:start event that compose triggers).
-func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload) (string, error) {
+// apply updates the container to the new image. For compose-auto containers it
+// patches the compose file and delegates to `docker compose up`; for all others
+// it uses the direct Docker API path (Recreate). Returns the new container ID
+// for the direct path, or "" for the compose path (the watcher rebuilds state
+// from the container:start event that compose triggers).
+func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *store.ContainerState) (string, string, error) {
+	// Compose-first path: edit compose file, run docker compose up -d
+	if info := compose.FromLabels(cs.Labels); info != nil && cs.Labels[labelComposeUpdate] == "auto" {
+		newTag := imageTag(p.Image)
+		histDir := ""
+		if e.history != nil {
+			histDir = e.history.HistDir()
+		}
+		e.log.Info("applying compose update",
+			"service", info.Service,
+			"image", p.Image,
+			"tag", newTag,
+		)
+		backupPath, err := compose.ApplyUpdate(ctx, info, newTag, histDir, e.log)
+		return "", backupPath, err
+	}
+
+	// Direct Docker API path
 	ref := imageRef(p.Image, p.NewDigest)
 	e.log.Info("applying update",
 		"container", p.ContainerName,
@@ -263,7 +286,8 @@ func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload) (string
 		"digest", shortDigest(p.NewDigest),
 		"ref", ref,
 	)
-	return dockerclient.Recreate(ctx, e.docker, p.ContainerID, ref)
+	newID, err := dockerclient.Recreate(ctx, e.docker, p.ContainerID, ref)
+	return newID, "", err
 }
 
 // imageRef pins an image to a specific digest: "repo:tag@sha256:...". The

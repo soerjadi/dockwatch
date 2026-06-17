@@ -13,10 +13,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     ./cmd/dockwatch
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# Distroless: no shell, no package manager — minimal attack surface.
-FROM gcr.io/distroless/static:nonroot
+# docker:cli provides the docker CLI + compose plugin needed for the
+# compose-first updater. The dockwatch binary is statically linked (CGO_ENABLED=0)
+# so it runs fine in an Alpine-based image.
+FROM docker:cli
 
-COPY --from=builder /dockwatch /dockwatch
+COPY --from=builder /dockwatch /usr/local/bin/dockwatch
 
 # Web UI + SSE
 EXPOSE 3010
@@ -24,4 +26,4 @@ EXPOSE 3010
 # Docker socket is mounted at runtime:
 #   -v /var/run/docker.sock:/var/run/docker.sock
 
-ENTRYPOINT ["/dockwatch"]
+ENTRYPOINT ["/usr/local/bin/dockwatch"]
