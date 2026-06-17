@@ -90,7 +90,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 //
 // Example curl:
 //
-//	curl -X POST http://dockwatch:3000/webhook/push \
+//	curl -X POST http://dockwatch:3010/webhook/push \
 //	  -H "Content-Type: application/json" \
 //	  -H "X-Dockwatch-Signature: sha256=<hmac>" \
 //	  -d '{"image":"yourrepo/myapp","tag":"1.2.3","digest":"sha256:abc..."}'
@@ -130,7 +130,7 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 //
 // Configure in Docker Hub: Repository → Webhooks → Add webhook URL:
 //
-//	http://your-dockwatch-host:3000/webhook/dockerhub
+//	http://your-dockwatch-host:3010/webhook/dockerhub
 //
 // Docker Hub does not send an HMAC signature, so this endpoint skips
 // signature validation and instead relies on network-level access control.

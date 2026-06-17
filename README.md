@@ -86,7 +86,7 @@
 │  ┌─────────────────┐ ┌──────────────────┐ ┌────────────────┐  │
 │  │ Web UI + SSE    │ │   REST API       │ │ Structured Log │  │
 │  │                 │ │                 │ │                │  │
-│  │ port :3000      │ │ GET  /api/       │ │ JSON to stdout │  │
+│  │ port :3010      │ │ GET  /api/       │ │ JSON to stdout │  │
 │  │ Real-time push  │ │   containers    │ │ Per-event      │  │
 │  │ via SSE from    │ │ POST /api/       │ │                │  │
 │  │ in-memory bus   │ │   update/:id    │ │                │  │
@@ -171,15 +171,15 @@ docker build -t dockwatch .
 docker run -d \
   --name dockwatch \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  -p 3000:3000 \
+  -p 3010:3010 \
   dockwatch
 
 # Or with docker compose
 docker compose up -d
 ```
 
-Open `http://localhost:3000` for the dashboard.  
-SSE stream at `http://localhost:3000/api/events`.
+Open `http://localhost:3010` for the dashboard.  
+SSE stream at `http://localhost:3010/api/events`.
 
 ---
 
@@ -214,7 +214,7 @@ SECRET=$(openssl rand -hex 32)
 PAYLOAD='{"image":"yourrepo/myapp","tag":"1.2.3"}'
 SIG="sha256=$(echo -n "$PAYLOAD" | openssl dgmac -sha256 -hmac "$SECRET" | tr -d ' \n')"
 
-curl -X POST http://dockwatch:3000/webhook/push \
+curl -X POST http://dockwatch:3010/webhook/push \
   -H "Content-Type: application/json" \
   -H "X-Dockwatch-Signature: $SIG" \
   -d "$PAYLOAD"
@@ -225,7 +225,7 @@ curl -X POST http://dockwatch:3000/webhook/push \
 ### Endpoint: POST /webhook/dockerhub
 
 Accepts Docker Hub's native webhook format directly. Configure in Docker Hub under:  
-**Repository → Webhooks → Add Webhook URL → `http://your-host:3000/webhook/dockerhub`**
+**Repository → Webhooks → Add Webhook URL → `http://your-host:3010/webhook/dockerhub`**
 
 No signature is sent by Docker Hub — protect this endpoint with network-level controls.
 
@@ -274,7 +274,7 @@ All configuration is via environment variables — no config file needed.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DOCKWATCH_ADDR` | `:3000` | HTTP listen address |
+| `DOCKWATCH_ADDR` | `:3010` | HTTP listen address |
 | `DOCKWATCH_LOG_LEVEL` | `info` | Log verbosity: debug/info/warn/error |
 | `DOCKWATCH_REGISTRY_CRON` | `0 0 4 * * *` | Fallback registry poll schedule (6-field cron) |
 | `DOCKWATCH_HEALTH_GRACE` | `30s` | How long to watch a container post-update |

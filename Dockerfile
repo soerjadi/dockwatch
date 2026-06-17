@@ -19,7 +19,7 @@ FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /dockwatch /dockwatch
 
 # Web UI + SSE
-EXPOSE 3000
+EXPOSE 3010
 
 # Docker socket is mounted at runtime:
 #   -v /var/run/docker.sock:/var/run/docker.sock
