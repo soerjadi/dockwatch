@@ -38,12 +38,14 @@ type UpdateAppliedPayload struct {
 // UpdateSkippedPayload is published on TopicUpdateSkipped when a semver
 // rule prevents the automatic update.
 type UpdateSkippedPayload struct {
-	ContainerID   string
-	ContainerName string
-	Image         string
-	NewDigest     string
-	Reason        string
-	SkippedAt     time.Time
+	ContainerID    string
+	ContainerName  string
+	Image          string
+	NewDigest      string
+	Reason         string
+	BreakingChange bool     // true when a major semver bump was detected
+	ReleaseNotes   []string // optional GitHub release note snippets (best-effort)
+	SkippedAt      time.Time
 }
 
 // RollbackDonePayload is published on TopicRollbackDone after a rollback

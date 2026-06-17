@@ -19,6 +19,7 @@ import (
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/compose"
 	"github.com/soerjadi/dockwatch/internal/dockerclient"
+	"github.com/soerjadi/dockwatch/internal/github"
 	"github.com/soerjadi/dockwatch/internal/store"
 )
 
@@ -42,12 +43,13 @@ type Executor struct {
 	bus    *bus.Bus
 	store  *store.Store
 	docker dockerclient.Scoped
+	gh     *github.Client
 	log    *slog.Logger
 }
 
 // New creates an Executor.
-func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, log *slog.Logger) *Executor {
-	return &Executor{bus: b, store: st, docker: docker, log: log}
+func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, log *slog.Logger) *Executor {
+	return &Executor{bus: b, store: st, docker: docker, gh: gh, log: log}
 }
 
 // Run starts the executor loop. Blocks until ctx is cancelled.
@@ -106,16 +108,29 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 	// Determine whether to auto-apply or skip.
 	shouldApply := e.evaluate(strategy, p, cs.Image)
 
+	// Detect breaking change (major semver bump) independently of strategy.
+	breakingChange := isMajorBump(cs.Image, p.Image)
+	if breakingChange && shouldApply {
+		e.log.Warn("applying update with major version bump — potential breaking change",
+			"container", p.ContainerName, "image", p.Image)
+	}
+
 	if !shouldApply {
-		e.bus.Publish(bus.TopicUpdateSkipped, bus.UpdateSkippedPayload{
-			ContainerID:   p.ContainerID,
-			ContainerName: p.ContainerName,
-			Image:         p.Image,
-			NewDigest:     p.NewDigest,
-			Reason:        "semver strategy: " + string(strategy),
-			SkippedAt:     time.Now(),
-		})
-		e.log.Info("update skipped", "container", p.ContainerName, "strategy", strategy)
+		skip := bus.UpdateSkippedPayload{
+			ContainerID:    p.ContainerID,
+			ContainerName:  p.ContainerName,
+			Image:          p.Image,
+			NewDigest:      p.NewDigest,
+			Reason:         "semver strategy: " + string(strategy),
+			BreakingChange: breakingChange,
+			SkippedAt:      time.Now(),
+		}
+		if breakingChange {
+			skip.ReleaseNotes = e.fetchReleaseNotes(ctx, cs.Labels, cs.Image, p.Image)
+		}
+		e.bus.Publish(bus.TopicUpdateSkipped, skip)
+		e.log.Info("update skipped", "container", p.ContainerName, "strategy", strategy,
+			"breaking_change", breakingChange)
 		return
 	}
 
@@ -257,4 +272,33 @@ func strategyFromLabels(labels map[string]string) Strategy {
 // dockwatch.watch=false. All other values (including absent) return true.
 func watchEnabled(labels map[string]string) bool {
 	return labels[labelWatch] != "false"
+}
+
+// isMajorBump returns true when the image tag represents a major version
+// increase (e.g. 3.1.0 → 4.0.0). Returns false when either tag is not
+// parseable semver — in that case we cannot make the call.
+func isMajorBump(oldImage, newImage string) bool {
+	oldMaj, _, _, oldOk := parseSemver(imageTag(oldImage))
+	newMaj, _, _, newOk := parseSemver(imageTag(newImage))
+	if !oldOk || !newOk {
+		return false
+	}
+	return newMaj > oldMaj
+}
+
+// fetchReleaseNotes fetches GitHub release notes as optional enrichment when
+// the container label "org.opencontainers.image.source" points to a GitHub
+// repo. Returns nil when the label is absent or the lookup fails.
+func (e *Executor) fetchReleaseNotes(ctx context.Context, labels map[string]string, oldImage, newImage string) []string {
+	source := labels["org.opencontainers.image.source"]
+	if source == "" || e.gh == nil {
+		return nil
+	}
+	oldTag := imageTag(oldImage)
+	newTag := imageTag(newImage)
+	notes := e.gh.FetchReleaseNotes(ctx, source, oldTag, newTag)
+	if len(notes) > 0 {
+		e.log.Info("breaking change: release notes fetched", "count", len(notes))
+	}
+	return notes
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/dockerclient"
 	"github.com/soerjadi/dockwatch/internal/executor"
+	"github.com/soerjadi/dockwatch/internal/github"
 	"github.com/soerjadi/dockwatch/internal/healthmon"
 	"github.com/soerjadi/dockwatch/internal/notifier"
 	"github.com/soerjadi/dockwatch/internal/poller"
@@ -79,9 +80,10 @@ func main() {
 	defer dock.Close()
 
 	reg := registry.New()
+	gh := github.New(cfg.GitHubToken)
 
 	w := watcher.New(dock, b, st, log)
-	exec := executor.New(dock, b, st, log)
+	exec := executor.New(dock, b, st, gh, log)
 	hmon := healthmon.New(dock, b, st, log)
 	rb := rollback.New(dock, b, st, log)
 	ntfy := notifier.New(b, log)

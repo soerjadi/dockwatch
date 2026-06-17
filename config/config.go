@@ -42,6 +42,11 @@ type Config struct {
 	// Set to a long random string (e.g. openssl rand -hex 32).
 	// If empty, signature validation is disabled — unsafe for production.
 	WebhookSecret string
+
+	// GitHubToken is an optional GitHub personal access token used when fetching
+	// release notes for breaking-change enrichment. Without a token, the GitHub
+	// API allows 60 unauthenticated requests per hour; with one, 5000 req/hr.
+	GitHubToken string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -54,6 +59,7 @@ func Load() *Config {
 		HealthGrace:   getDuration("DOCKWATCH_HEALTH_GRACE", 30*time.Second),
 		DryRun:        getBool("DOCKWATCH_DRY_RUN", false),
 		WebhookSecret: getEnv("DOCKWATCH_WEBHOOK_SECRET", ""),
+		GitHubToken:   getEnv("GITHUB_TOKEN", ""),
 	}
 	return c
 }
