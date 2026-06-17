@@ -91,7 +91,7 @@ func main() {
 	defer hist.Close()
 
 	w := watcher.New(dock, b, st, log)
-	exec := executor.New(dock, b, st, gh, hist, log)
+	exec := executor.New(dock, b, st, gh, hist, cfg.ZeroDTTimeout, log)
 	hmon := healthmon.New(dock, b, st, log)
 	rb := rollback.New(dock, b, st, log)
 	ntfy := notifier.New(b, log)

@@ -57,6 +57,11 @@ type Config struct {
 	// each update so that rollbacks can restore the exact prior state.
 	// Default: "/data/history"
 	HistoryDir string
+
+	// ZeroDTTimeout is how long to wait for a new container to become healthy
+	// before aborting a zero-downtime update and rolling back.
+	// Default: 60s
+	ZeroDTTimeout time.Duration
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -72,6 +77,7 @@ func Load() *Config {
 		GitHubToken:   getEnv("GITHUB_TOKEN", ""),
 		HistoryDBPath: getEnv("DOCKWATCH_HISTORY_DB", "/data/dockwatch.db"),
 		HistoryDir:    getEnv("DOCKWATCH_HISTORY_DIR", "/data/history"),
+		ZeroDTTimeout: getDuration("DOCKWATCH_ZERO_DT_TIMEOUT", 60*time.Second),
 	}
 	return c
 }

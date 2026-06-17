@@ -24,6 +24,9 @@ import (
 	"github.com/soerjadi/dockwatch/internal/store"
 )
 
+// zeroDTDefaultTimeout is the default maximum wait time for zero-downtime updates.
+const zeroDTDefaultTimeout = 60 * time.Second
+
 // Strategy defines how aggressive automatic updates are for a container.
 type Strategy string
 
@@ -35,24 +38,29 @@ const (
 )
 
 const (
-	labelKey           = "dockwatch.update"         // update strategy
-	labelWatch         = "dockwatch.watch"           // opt-out: set "false" to exclude container
-	labelComposeUpdate = "dockwatch.compose.update"  // "auto" enables compose-first path
+	labelKey           = "dockwatch.update"          // update strategy
+	labelWatch         = "dockwatch.watch"            // opt-out: set "false" to exclude container
+	labelComposeUpdate = "dockwatch.compose.update"   // "auto" enables compose-first path
+	labelZeroDT        = "dockwatch.zero-downtime"    // "true" enables zero-downtime mode (compose only)
 )
 
 // Executor subscribes to image.updated events and applies updates.
 type Executor struct {
-	bus     *bus.Bus
-	store   *store.Store
-	docker  dockerclient.Scoped
-	gh      *github.Client
-	history *history.Store
-	log     *slog.Logger
+	bus           *bus.Bus
+	store         *store.Store
+	docker        dockerclient.Scoped
+	gh            *github.Client
+	history       *history.Store
+	zeroDTTimeout time.Duration
+	log           *slog.Logger
 }
 
 // New creates an Executor.
-func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, log *slog.Logger) *Executor {
-	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, log: log}
+func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, zeroDTTimeout time.Duration, log *slog.Logger) *Executor {
+	if zeroDTTimeout == 0 {
+		zeroDTTimeout = zeroDTDefaultTimeout
+	}
+	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, zeroDTTimeout: zeroDTTimeout, log: log}
 }
 
 // Run starts the executor loop. Blocks until ctx is cancelled.
@@ -262,18 +270,25 @@ func shortDigest(d string) string {
 // for the direct path, or "" for the compose path (the watcher rebuilds state
 // from the container:start event that compose triggers).
 func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *store.ContainerState) (string, string, error) {
-	// Compose-first path: edit compose file, run docker compose up -d
+	// Compose paths: edit compose file, run docker compose up
 	if info := compose.FromLabels(cs.Labels); info != nil && cs.Labels[labelComposeUpdate] == "auto" {
 		newTag := imageTag(p.Image)
 		histDir := ""
 		if e.history != nil {
 			histDir = e.history.HistDir()
 		}
-		e.log.Info("applying compose update",
-			"service", info.Service,
-			"image", p.Image,
-			"tag", newTag,
-		)
+
+		// Zero-downtime path: scale-up → health-check → scale-down
+		if cs.Labels[labelZeroDT] == "true" {
+			e.log.Info("applying zero-downtime compose update",
+				"service", info.Service, "tag", newTag)
+			backupPath, err := compose.ZeroDowntimeUpdate(ctx, info, newTag, histDir,
+				compose.ZeroDTConfig{Timeout: e.zeroDTTimeout}, e.docker, e.log)
+			return "", backupPath, err
+		}
+
+		// Standard compose path: patch file + docker compose up -d
+		e.log.Info("applying compose update", "service", info.Service, "tag", newTag)
 		backupPath, err := compose.ApplyUpdate(ctx, info, newTag, histDir, e.log)
 		return "", backupPath, err
 	}
