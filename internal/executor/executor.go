@@ -12,6 +12,8 @@ package executor
 import (
 	"context"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/soerjadi/dockwatch/internal/bus"
@@ -29,8 +31,10 @@ const (
 	StrategyNotify Strategy = "notify" // never auto-update
 )
 
-// labelKey is the Docker label that controls update strategy per container.
-const labelKey = "dockwatch.update"
+const (
+	labelKey   = "dockwatch.update" // update strategy
+	labelWatch = "dockwatch.watch"  // opt-out: set "false" to exclude container
+)
 
 // Executor subscribes to image.updated events and applies updates.
 type Executor struct {
@@ -74,18 +78,25 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 		return
 	}
 
+	if !watchEnabled(cs.Labels) {
+		e.log.Debug("update skipped: container excluded via dockwatch.watch=false",
+			"container", p.ContainerName,
+		)
+		return
+	}
+
 	strategy := strategyFromLabels(cs.Labels)
 
 	e.log.Info("update candidate",
 		"container", p.ContainerName,
 		"image", p.Image,
-		"old_digest", p.OldDigest[:16],
-		"new_digest", p.NewDigest[:16],
+		"old_digest", shortDigest(p.OldDigest),
+		"new_digest", shortDigest(p.NewDigest),
 		"strategy", strategy,
 	)
 
 	// Determine whether to auto-apply or skip.
-	shouldApply := e.evaluate(strategy, p)
+	shouldApply := e.evaluate(strategy, p, cs.Image)
 
 	if !shouldApply {
 		e.bus.Publish(bus.TopicUpdateSkipped, bus.UpdateSkippedPayload{
@@ -125,21 +136,83 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 }
 
 // evaluate returns true if the update should be automatically applied.
-func (e *Executor) evaluate(strategy Strategy, p bus.ImageUpdatedPayload) bool {
+// currentImage is the image reference the container is currently running.
+func (e *Executor) evaluate(strategy Strategy, p bus.ImageUpdatedPayload, currentImage string) bool {
 	switch strategy {
 	case StrategyNotify:
 		return false
 	case StrategyAuto:
 		return true
 	case StrategyPatch:
-		// TODO: parse semver from image tag and check if only patch bumped
-		return true
+		return semverAllow(currentImage, p.Image, false)
 	case StrategyMinor:
-		// TODO: parse semver and check major hasn't changed
-		return true
+		return semverAllow(currentImage, p.Image, true)
 	default:
 		return true
 	}
+}
+
+// semverAllow returns true if the version bump from oldImage to newImage is
+// within the allowed scope. allowMinor permits minor+patch bumps; when false
+// only patch bumps are allowed. Major bumps always return false.
+// Falls back to true when either tag isn't parseable semver (e.g. "latest").
+func semverAllow(oldImage, newImage string, allowMinor bool) bool {
+	oldMaj, oldMin, _, oldOk := parseSemver(imageTag(oldImage))
+	newMaj, newMin, _, newOk := parseSemver(imageTag(newImage))
+	if !oldOk || !newOk {
+		return true
+	}
+	if newMaj != oldMaj {
+		return false
+	}
+	if newMin != oldMin {
+		return allowMinor
+	}
+	return true
+}
+
+// imageTag extracts the version tag from an image reference like
+// "nginx:1.2.3" → "1.2.3". Strips any digest suffix first.
+func imageTag(image string) string {
+	if idx := strings.Index(image, "@"); idx != -1 {
+		image = image[:idx]
+	}
+	if idx := strings.LastIndex(image, ":"); idx != -1 {
+		return image[idx+1:]
+	}
+	return ""
+}
+
+// parseSemver parses tags like "1.2.3", "v1.2", "1" into numeric components.
+// Returns ok=false when the tag isn't a numeric version string.
+func parseSemver(tag string) (major, minor, patch int, ok bool) {
+	tag = strings.TrimPrefix(tag, "v")
+	parts := strings.SplitN(tag, ".", 3)
+	var err error
+	if major, err = strconv.Atoi(parts[0]); err != nil {
+		return
+	}
+	if len(parts) >= 2 {
+		if minor, err = strconv.Atoi(parts[1]); err != nil {
+			return
+		}
+	}
+	if len(parts) >= 3 {
+		patchStr, _, _ := strings.Cut(parts[2], "-") // strip pre-release suffix
+		if patch, err = strconv.Atoi(patchStr); err != nil {
+			return
+		}
+	}
+	ok = true
+	return
+}
+
+// shortDigest safely returns the first 16 chars of a digest for logging.
+func shortDigest(d string) string {
+	if len(d) > 16 {
+		return d[:16]
+	}
+	return d
 }
 
 // apply pulls the new image and recreates the container against it, returning
@@ -170,4 +243,10 @@ func strategyFromLabels(labels map[string]string) Strategy {
 		return Strategy(v)
 	}
 	return StrategyAuto
+}
+
+// watchEnabled returns false only when the container explicitly sets
+// dockwatch.watch=false. All other values (including absent) return true.
+func watchEnabled(labels map[string]string) bool {
+	return labels[labelWatch] != "false"
 }

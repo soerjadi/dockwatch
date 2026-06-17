@@ -73,6 +73,8 @@ func (m *Monitor) Run(ctx context.Context) {
 
 // startWatch begins monitoring a container for the grace window.
 func (m *Monitor) startWatch(parent context.Context, p bus.UpdateAppliedPayload) {
+	grace := m.graceFor(p.ContainerID)
+
 	m.mu.Lock()
 	// Cancel any existing watch for this container (e.g. rapid successive updates).
 	if cancel, ok := m.watched[p.ContainerID]; ok {
@@ -91,14 +93,14 @@ func (m *Monitor) startWatch(parent context.Context, p bus.UpdateAppliedPayload)
 
 		m.log.Info("health watch started",
 			"container", p.ContainerName,
-			"grace", defaultGrace,
+			"grace", grace,
 		)
 
 		// Poll the container's health status during the grace window.
 		// TODO: replace ticker with Docker event stream health_status events
 		//       (already wired in watcher.go) for zero-latency detection.
 		ticker := time.NewTicker(3 * time.Second)
-		deadline := time.NewTimer(defaultGrace)
+		deadline := time.NewTimer(grace)
 		defer ticker.Stop()
 		defer deadline.Stop()
 
@@ -139,6 +141,20 @@ func (m *Monitor) startWatch(parent context.Context, p bus.UpdateAppliedPayload)
 			}
 		}
 	}()
+}
+
+// graceFor returns the health grace window for a container, reading
+// dockwatch.health.grace label if present, falling back to defaultGrace.
+func (m *Monitor) graceFor(containerID string) time.Duration {
+	cs := m.store.Get(containerID)
+	if cs != nil {
+		if v := cs.Labels["dockwatch.health.grace"]; v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				return d
+			}
+		}
+	}
+	return defaultGrace
 }
 
 // checkHealth inspects the container's health state via the scoped client.

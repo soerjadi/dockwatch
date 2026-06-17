@@ -7,6 +7,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -82,10 +83,16 @@ func (c *Client) fetchToken(ctx context.Context, image string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	// TODO: decode JSON response and extract .token field
-	// Returning placeholder until full implementation
-	_ = resp
-	return "", fmt.Errorf("TODO: implement token decode")
+	var result struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode token: %w", err)
+	}
+	if result.Token == "" {
+		return "", fmt.Errorf("empty token in registry response")
+	}
+	return result.Token, nil
 }
 
 // splitImageRef splits "nginx:1.25" → ("library/nginx", "1.25").

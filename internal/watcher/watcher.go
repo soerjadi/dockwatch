@@ -80,9 +80,40 @@ func (w *Watcher) handleImageEvent(ev dockerclient.Event) {
 	if ev.Action != "pull" {
 		return
 	}
-	w.log.Info("image pulled", "image", ev.Image)
-	// TODO: compare pulled digest against running containers that use this
-	// image and publish TopicImageUpdated for any that are out of date.
+	// ev.Name = "image:tag" (Actor.Attributes["name"]), ev.ID = image content digest.
+	imageName := ev.Name
+	if imageName == "" {
+		return
+	}
+	newDigest := ev.ID
+
+	for _, cs := range w.store.All() {
+		// Strip any digest suffix from the stored image for comparison — this
+		// handles containers created via "image@sha256:..." references.
+		storedImage := cs.Image
+		if idx := strings.Index(storedImage, "@"); idx != -1 {
+			storedImage = storedImage[:idx]
+		}
+		if storedImage != imageName {
+			continue
+		}
+		if newDigest != "" && cs.CurrentDigest() == newDigest {
+			continue // already at this digest
+		}
+		w.log.Info("image pull detected for watched container",
+			"container", cs.Name,
+			"image", imageName,
+			"digest", newDigest,
+		)
+		w.bus.Publish(bus.TopicImageUpdated, bus.ImageUpdatedPayload{
+			ContainerID:   cs.ID,
+			ContainerName: cs.Name,
+			Image:         imageName,
+			OldDigest:     cs.CurrentDigest(),
+			NewDigest:     newDigest,
+			DetectedAt:    time.Now(),
+		})
+	}
 }
 
 // handleContainerEvent handles container lifecycle events.
