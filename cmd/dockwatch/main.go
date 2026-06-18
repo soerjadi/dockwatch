@@ -26,6 +26,7 @@ import (
 	"syscall"
 
 	"github.com/soerjadi/dockwatch/config"
+	"github.com/soerjadi/dockwatch/internal/agentserver"
 	"github.com/soerjadi/dockwatch/internal/api"
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/dockerclient"
@@ -96,7 +97,8 @@ func main() {
 	rb := rollback.New(dock, b, st, log)
 	ntfy := notifier.New(b, log)
 	poll := poller.New(b, st, reg, cfg.RegistryCron, log)
-	srv := api.New(cfg.Addr, b, st, ntfy, reg, hist, cfg.WebhookSecret, log)
+	agentHub := agentserver.New(cfg.AgentToken, log)
+	srv := api.New(cfg.Addr, b, st, ntfy, reg, hist, agentHub, cfg.WebhookSecret, log)
 
 	// ── Run all components concurrently ───────────────────────────────────────
 	var wg sync.WaitGroup

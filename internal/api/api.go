@@ -2,12 +2,15 @@
 //
 // Endpoints:
 //
-//	GET  /healthz                    — liveness probe
-//	GET  /api/containers             — list all tracked containers + current state
-//	POST /api/update/:id             — manually trigger an update check
-//	POST /api/rollback/:id           — manually trigger a rollback
-//	GET  /api/events                 — SSE stream of all bus events (real-time UI)
-//	GET  /api/history                — list update history (optional ?service=<name>)
+//	GET  /healthz                        — liveness probe
+//	GET  /api/containers                 — list all tracked containers + current state
+//	POST /api/update/:id                 — manually trigger an update check
+//	POST /api/rollback/:id               — manually trigger a rollback
+//	GET  /api/events                     — SSE stream of all bus events (real-time UI)
+//	GET  /api/history                    — list update history (optional ?service=<name>)
+//	GET  /api/agents                     — list connected remote agents
+//	POST /api/agents/:hostname/update    — dispatch update command to a remote agent
+//	GET  /agent/connect                  — WebSocket upgrade endpoint for agents
 //
 // Webhook endpoints (inbound push from CI/CD — no polling needed):
 //
@@ -24,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/soerjadi/dockwatch/internal/agentproto"
+	"github.com/soerjadi/dockwatch/internal/agentserver"
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/history"
 	"github.com/soerjadi/dockwatch/internal/notifier"
@@ -34,20 +39,21 @@ import (
 
 // Server is the HTTP API server.
 type Server struct {
-	bus      *bus.Bus
-	store    *store.Store
-	notifier *notifier.Notifier
-	registry *registry.Client
-	history  *history.Store
-	log      *slog.Logger
-	server   *http.Server
+	bus        *bus.Bus
+	store      *store.Store
+	notifier   *notifier.Notifier
+	registry   *registry.Client
+	history    *history.Store
+	agentHub   *agentserver.Server
+	log        *slog.Logger
+	server     *http.Server
 }
 
 // New creates an API Server bound to addr (e.g. ":3010").
 // webhookSecret is the HMAC-SHA256 shared secret for /webhook/push;
 // pass "" to disable signature validation (dev only).
-func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, hist *history.Store, webhookSecret string, log *slog.Logger) *Server {
-	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, log: log}
+func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, hist *history.Store, agentHub *agentserver.Server, webhookSecret string, log *slog.Logger) *Server {
+	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, agentHub: agentHub, log: log}
 
 	mux := http.NewServeMux()
 
@@ -57,6 +63,9 @@ func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *re
 	mux.HandleFunc("/api/update/", s.handleUpdate)
 	mux.HandleFunc("/api/rollback/", s.handleRollback)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/agents", s.handleAgents)
+	mux.HandleFunc("/api/agents/", s.handleAgentDispatch)
+	mux.Handle("/agent/connect", s.agentHub)
 	mux.HandleFunc("/api/events", s.handleSSE)
 
 	// Inbound webhooks — CI/CD pushes here instead of dockwatch polling
@@ -225,6 +234,64 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(entries)
+}
+
+// handleAgents lists all currently connected remote agents.
+func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	agents := s.agentHub.ListAgents()
+	if agents == nil {
+		agents = []agentserver.AgentInfo{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(agents)
+}
+
+// handleAgentDispatch dispatches an update command to a named agent.
+// POST /api/agents/{hostname}/update
+func (s *Server) handleAgentDispatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Extract hostname from path: /api/agents/{hostname}/update
+	path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 2 || parts[1] != "update" {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	hostname := parts[0]
+
+	var req struct {
+		Service string `json:"service"`
+		Image   string `json:"image"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Service == "" {
+		http.Error(w, "service is required", http.StatusBadRequest)
+		return
+	}
+
+	cmd := agentproto.CommandMsg{
+		Type:    agentproto.TypeCommand,
+		ID:      fmt.Sprintf("cmd-%d", time.Now().UnixNano()),
+		Action:  "update",
+		Service: req.Service,
+		Image:   req.Image,
+	}
+	if err := s.agentHub.Dispatch(hostname, cmd); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "dispatched", "id": cmd.ID})
 }
 
 // handleSSE streams all bus events to the browser as Server-Sent Events.

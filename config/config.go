@@ -62,6 +62,11 @@ type Config struct {
 	// before aborting a zero-downtime update and rolling back.
 	// Default: 60s
 	ZeroDTTimeout time.Duration
+
+	// AgentToken is the shared pre-authentication token used to authenticate
+	// remote agents connecting to the controller's WebSocket endpoint.
+	// If empty, any agent may connect (dev only — set in production).
+	AgentToken string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -78,6 +83,7 @@ func Load() *Config {
 		HistoryDBPath: getEnv("DOCKWATCH_HISTORY_DB", "/data/dockwatch.db"),
 		HistoryDir:    getEnv("DOCKWATCH_HISTORY_DIR", "/data/history"),
 		ZeroDTTimeout: getDuration("DOCKWATCH_ZERO_DT_TIMEOUT", 60*time.Second),
+		AgentToken:    getEnv("DOCKWATCH_AGENT_TOKEN", ""),
 	}
 	return c
 }
