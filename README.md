@@ -265,12 +265,20 @@ No signature is sent by Docker Hub — protect this endpoint with network-level 
 ### CI/CD Integration Examples
 
 **GitHub Actions** — call after `docker push`:
+
+`IMAGE_NAME` must be the image name **without** tag (e.g. `ghcr.io/owner/app`).
+`DOCKER_TAG` must be a real Docker tag the registry actually has (e.g. `main`, `latest`, `1.2.3`) — **not** `github.sha`, which is a git commit hash, not a Docker tag.
+Providing the digest is strongly recommended: it lets dockwatch pin to the exact content and skip an extra registry round-trip.
+
 ```yaml
 - name: Notify dockwatch
+  env:
+    IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/your-app  # no tag
+    DOCKER_TAG: ${{ github.ref_name }}                            # e.g. "main"
   run: |
     PAYLOAD=$(jq -n \
-      --arg image "${{ env.IMAGE_NAME }}" \
-      --arg tag "${{ github.sha }}" \
+      --arg image "$IMAGE_NAME" \
+      --arg tag   "$DOCKER_TAG" \
       --arg digest "${{ steps.push.outputs.digest }}" \
       '{image: $image, tag: $tag, digest: $digest, source: "github-actions"}')
 
@@ -289,7 +297,7 @@ notify_dockwatch:
   stage: deploy
   script:
     - |
-      PAYLOAD="{\"image\":\"$CI_REGISTRY_IMAGE\",\"tag\":\"$CI_COMMIT_SHA\",\"source\":\"gitlab-ci\"}"
+      PAYLOAD="{\"image\":\"$CI_REGISTRY_IMAGE\",\"tag\":\"$CI_COMMIT_REF_SLUG\",\"source\":\"gitlab-ci\"}"
       SIG="sha256=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$DOCKWATCH_WEBHOOK_SECRET" | awk '{print $NF}')"
       curl -sf -X POST https://your-dockwatch-host/webhook/push \
         -H "Content-Type: application/json" \

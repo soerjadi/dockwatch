@@ -57,7 +57,7 @@ func ZeroDowntimeUpdate(
 			log.Error("zero-downtime: failed to restore compose file", "err", restoreErr)
 		}
 		if scaledUp {
-			_ = scaleCompose(ctx, info, 1, false, log)
+			_ = scaleCompose(ctx, info, 1, true, log)
 		}
 	}
 
@@ -83,7 +83,7 @@ func ZeroDowntimeUpdate(
 		} else if healthy {
 			log.Info("zero-downtime: healthy — scaling down old instance",
 				"service", info.Service, "new_id", newID[:min(12, len(newID))])
-			if err := scaleCompose(ctx, info, 1, false, log); err != nil {
+			if err := scaleCompose(ctx, info, 1, true, log); err != nil {
 				return backupPath, fmt.Errorf("zero-downtime: scale down failed: %w", err)
 			}
 			return backupPath, nil
