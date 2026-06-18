@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -96,6 +97,20 @@ func main() {
 		os.Exit(1)
 	}
 	defer hist.Close()
+
+	// Seed the store with containers already running before we subscribe to events.
+	if existing, err := dock.ListContainers(ctx); err != nil {
+		log.Warn("failed to seed store with existing containers", "err", err)
+	} else {
+		for _, c := range existing {
+			name := ""
+			if len(c.Names) > 0 {
+				name = strings.TrimPrefix(c.Names[0], "/")
+			}
+			st.Upsert(c.ID, name, c.Image, c.Labels)
+		}
+		log.Info("store seeded with existing containers", "count", len(existing))
+	}
 
 	w := watcher.New(dock, b, st, log)
 	exec := executor.New(dock, b, st, gh, hist, cfg.ZeroDTTimeout, log)

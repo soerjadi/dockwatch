@@ -10,18 +10,18 @@
 ┌────────────────────────────────────────────────────────────────┐
 │                         LAYER 1 — Sources                      │
 │                                                                │
-│  ┌──────────────────────┐  ┌───────────────┐  ┌────────────┐  │
-│  │ Docker Daemon Stream  │  │ Inbound       │  │ Registry   │  │
-│  │ (primary)             │  │ Webhook       │  │ Poller     │  │
-│  │                       │  │ (preferred)   │  │ (last      │  │
-│  │ /var/run/docker.sock  │  │               │  │ resort)    │  │
-│  │                       │  │ POST          │  │            │  │
-│  │ Listens for:          │  │ /webhook/push │  │ HEAD only  │  │
-│  │ • container start     │  │               │  │ cron-based │  │
-│  │ • container die       │  │ POST          │  │ fallback   │  │
-│  │ • health_status       │  │ /webhook/     │  │            │  │
-│  │ • container destroy   │  │  dockerhub    │  │            │  │
-│  └──────────────────────┘  └───────────────┘  └────────────┘  │
+│  ┌──────────────────────┐  ┌───────────────┐  ┌────────────┐   │
+│  │ Docker Daemon Stream │  │ Inbound       │  │ Registry   │   │
+│  │ (primary)            │  │ Webhook       │  │ Poller     │   │
+│  │                      │  │ (preferred)   │  │ (last      │   │
+│  │ /var/run/docker.sock │  │               │  │ resort)    │   │
+│  │                      │  │ POST          │  │            │   │
+│  │ Listens for:         │  │ /webhook/push │  │ HEAD only  │   │
+│  │ • container start    │  │               │  │ cron-based │   │
+│  │ • container die      │  │ POST          │  │ fallback   │   │
+│  │ • health_status      │  │ /webhook/     │  │            │   │
+│  │ • container destroy  │  │  dockerhub    │  │            │   │
+│  └──────────────────────┘  └───────────────┘  └────────────┘   │
 │                                    ▲                           │
 │                         CI/CD calls here                       │
 │                         after docker push                      │
@@ -34,12 +34,12 @@
 │          Go channels · buffered · topic fanout                 │
 │          Zero external dependencies                            │
 │                                                                │
-│  ┌──────────────┐ ┌──────────────────────┐ ┌───────────────┐  │
-│  │image.updated │ │container.unhealthy   │ │update.applied │  │
-│  └──────────────┘ └──────────────────────┘ └───────────────┘  │
-│  ┌──────────────┐ ┌──────────────────────┐                    │
-│  │update.skipped│ │rollback.done         │                    │
-│  └──────────────┘ └──────────────────────┘                    │
+│  ┌──────────────┐ ┌──────────────────────┐ ┌───────────────┐   │
+│  │image.updated │ │container.unhealthy   │ │update.applied │   │
+│  └──────────────┘ └──────────────────────┘ └───────────────┘   │
+│  ┌──────────────┐ ┌──────────────────────┐                     │
+│  │update.skipped│ │rollback.done         │                     │
+│  └──────────────┘ └──────────────────────┘                     │
 └───────────────────────────┬────────────────────────────────────┘
                             │ consumed by
                             ▼
@@ -47,21 +47,21 @@
 │                  LAYER 3 — Internal Consumers                  │
 │                  (all goroutines in same process)              │
 │                                                                │
-│  ┌──────────────────┐ ┌─────────────────┐ ┌────────────────┐  │
-│  │ Update Executor  │ │ Health Monitor  │ │   Notifier     │  │
-│  │                  │ │                 │ │                │  │
-│  │ Subscribes to:   │ │ Subscribes to:  │ │ Subscribes to: │  │
-│  │ image.updated    │ │ update.applied  │ │ all topics     │  │
-│  │                  │ │                 │ │                │  │
-│  │ Applies semver   │ │ Watches health  │ │ Logs + SSE     │  │
-│  │ strategy rules   │ │ for grace window│ │ push to UI     │  │
-│  │ per container    │ │                 │ │                │  │
-│  │ label            │ │ Publishes       │ │ Fires per-     │  │
-│  │                  │ │ container.      │ │ event, not     │  │
-│  │ Publishes:       │ │ unhealthy if    │ │ per-session    │  │
-│  │ update.applied   │ │ health check    │ │                │  │
-│  │ update.skipped   │ │ fails           │ └────────────────┘  │
-│  └──────────────────┘ └─────────────────┘                     │
+│  ┌──────────────────┐ ┌─────────────────┐ ┌────────────────┐   │
+│  │ Update Executor  │ │ Health Monitor  │ │   Notifier     │   │
+│  │                  │ │                 │ │                │   │
+│  │ Subscribes to:   │ │ Subscribes to:  │ │ Subscribes to: │   │
+│  │ image.updated    │ │ update.applied  │ │ all topics     │   │
+│  │                  │ │                 │ │                │   │
+│  │ Applies semver   │ │ Watches health  │ │ Logs + SSE     │   │
+│  │ strategy rules   │ │ for grace window│ │ push to UI     │   │
+│  │ per container    │ │                 │ │                │   │
+│  │ label            │ │ Publishes       │ │ Fires per-     │   │
+│  │                  │ │ container.      │ │ event, not     │   │
+│  │ Publishes:       │ │ unhealthy if    │ │ per-session    │   │
+│  │ update.applied   │ │ health check    │ │                │   │
+│  │ update.skipped   │ │ fails           │ └────────────────┘   │
+│  └──────────────────┘ └─────────────────┘                      │
 └───────────────────────────┬────────────────────────────────────┘
                             │ rollback path
                             ▼
@@ -69,43 +69,43 @@
 │                LAYER 4 — Rollback Engine                       │
 │                *** NOT present in Watchtower or WUD ***        │
 │                                                                │
-│  Subscribes to: container.unhealthy                           │
+│  Subscribes to: container.unhealthy                            │
 │                                                                │
-│  1. Reads previous image digest from in-memory store          │
-│     (ring buffer, last 5 digests per container)               │
-│  2. Re-pulls image by digest: image@sha256:<prev>             │
-│  3. Stops + removes current container                         │
-│  4. Recreates container with previous image                   │
-│  5. Publishes rollback.done                                   │
+│  1. Reads previous image digest from in-memory store           │
+│     (ring buffer, last 5 digests per container)                │
+│  2. Re-pulls image by digest: image@sha256:<prev>              │
+│  3. Stops + removes current container                          │
+│  4. Recreates container with previous image                    │
+│  5. Publishes rollback.done                                    │
 └───────────────────────────┬────────────────────────────────────┘
                             │ exposes
                             ▼
 ┌────────────────────────────────────────────────────────────────┐
 │                    LAYER 5 — Outputs                           │
 │                                                                │
-│  ┌─────────────────┐ ┌──────────────────┐ ┌────────────────┐  │
-│  │ Web UI + SSE    │ │   REST API       │ │ Structured Log │  │
-│  │                 │ │                 │ │                │  │
-│  │ port :3010      │ │ GET  /api/       │ │ JSON to stdout │  │
-│  │ Real-time push  │ │   containers    │ │ Per-event      │  │
-│  │ via SSE from    │ │ POST /api/       │ │                │  │
-│  │ in-memory bus   │ │   update/:id    │ │                │  │
-│  │ No UI polling   │ │ POST /api/       │ │                │  │
-│  │                 │ │   rollback/:id  │ │                │  │
-│  └─────────────────┘ │ GET  /api/events│ └────────────────┘  │
+│  ┌─────────────────┐ ┌──────────────────┐ ┌────────────────┐   │
+│  │ Web UI + SSE    │ │   REST API       │ │ Structured Log │   │
+│  │                 │ │                  │ │                │   │
+│  │ port :3010      │ │ GET  /api/       │ │ JSON to stdout │   │
+│  │ Real-time push  │ │   containers     │ │ Per-event      │   │
+│  │ via SSE from    │ │ POST /api/       │ │                │   │
+│  │ in-memory bus   │ │   update/:id     │ │                │   │
+│  │ No UI polling   │ │ POST /api/       │ │                │   │
+│  │                 │ │   rollback/:id   │ │                │   │
+│  └─────────────────┘ │ GET  /api/events │ └────────────────┘   │
 │                      │ GET  /api/       │                      │
-│                      │   history       │                      │
-│                      │ GET  /api/agents│                      │
+│                      │   history        │                      │
+│                      │ GET  /api/agents │                      │
 │                      │ POST /api/       │                      │
-│                      │  agents/:h/     │                      │
-│                      │  update         │                      │
-│                      │ GET  /agent/    │                      │
-│                      │   connect (WS)  │                      │
-│                      │ POST /webhook/  │                      │
-│                      │   push          │                      │
-│                      │ POST /webhook/  │                      │
-│                      │   dockerhub     │                      │
-│                      └─────────────────┘                      │
+│                      │  agents/:h/      │                      │
+│                      │  update          │                      │
+│                      │ GET  /agent/     │                      │
+│                      │   connect (WS)   │                      │
+│                      │ POST /webhook/   │                      │
+│                      │   push           │                      │
+│                      │ POST /webhook/   │                      │
+│                      │   dockerhub      │                      │
+│                      └───────────────── ┘                      │
 └────────────────────────────────────────────────────────────────┘
 ```
 
