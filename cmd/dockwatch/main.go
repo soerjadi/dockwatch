@@ -75,7 +75,17 @@ func main() {
 	// Scoped Docker client — the ONLY surface that touches the daemon. Every
 	// component below receives this same client; none can call anything the
 	// dockerclient.Scoped interface doesn't expose.
-	dock, err := dockerclient.New(cfg.DockerHost, cfg.DryRun)
+	dock, err := dockerclient.New(cfg.DockerHost, cfg.DryRun, func(host string) (string, string) {
+		switch host {
+		case "ghcr.io":
+			if cfg.GHCRToken != "" {
+				return "token", cfg.GHCRToken
+			}
+		case "registry-1.docker.io":
+			return cfg.DockerHubUsername, cfg.DockerHubPassword
+		}
+		return cfg.RegistryUsername, cfg.RegistryPassword
+	})
 	if err != nil {
 		log.Error("failed to init docker client", "err", err)
 		os.Exit(1)

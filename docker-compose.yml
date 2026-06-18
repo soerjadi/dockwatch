@@ -42,6 +42,7 @@ services:
       DOCKWATCH_HEALTH_GRACE:     "30s"            # health watch window post-update
       DOCKWATCH_DRY_RUN:          "false"          # set "true" to disable all actions
       DOCKWATCH_WEBHOOK_SECRET:   "changeme"       # openssl rand -hex 32
+      DOCKWATCH_GHCR_TOKEN:       ""               # GitHub PAT with read:packages scope
     labels:
       traefik.enable: "true"
       traefik.docker.network: "proxy"

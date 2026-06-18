@@ -42,6 +42,8 @@ package dockerclient
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -125,8 +127,9 @@ type Scoped interface {
 // Client is the production implementation of Scoped, backed by the Docker SDK.
 // It is the only thing in the codebase that holds a *client.Client.
 type Client struct {
-	cli    *client.Client
-	dryRun bool
+	cli      *client.Client
+	dryRun   bool
+	credsFor func(host string) (username, password string)
 }
 
 // compile-time assertion that *Client satisfies the narrow interface.
@@ -137,7 +140,10 @@ var _ Scoped = (*Client)(nil)
 // operations (Pull, Stop, Start, Remove, Create) become no-ops while the read
 // operations (List, Inspect, StreamEvents) stay live — so dockwatch can
 // observe and report without touching anything.
-func New(host string, dryRun bool) (*Client, error) {
+//
+// credsFor returns registry credentials for a given host and is used to
+// authenticate docker pull. Pass nil to rely on the daemon's credential store.
+func New(host string, dryRun bool, credsFor func(host string) (username, password string)) (*Client, error) {
 	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
 	if host != "" {
 		opts = append(opts, client.WithHost(host))
@@ -146,7 +152,7 @@ func New(host string, dryRun bool) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dockerclient: init: %w", err)
 	}
-	return &Client{cli: cli, dryRun: dryRun}, nil
+	return &Client{cli: cli, dryRun: dryRun, credsFor: credsFor}, nil
 }
 
 func (c *Client) ListContainers(ctx context.Context) ([]types.Container, error) {
@@ -191,7 +197,14 @@ func (c *Client) PullImage(ctx context.Context, ref string) error {
 	if c.dryRun {
 		return nil
 	}
-	rc, err := c.cli.ImagePull(ctx, ref, image.PullOptions{})
+	opts := image.PullOptions{}
+	if c.credsFor != nil {
+		user, pass := c.credsFor(registryHost(ref))
+		if user != "" || pass != "" {
+			opts.RegistryAuth = encodeAuth(user, pass)
+		}
+	}
+	rc, err := c.cli.ImagePull(ctx, ref, opts)
 	if err != nil {
 		return fmt.Errorf("pull %s: %w", ref, err)
 	}
@@ -297,4 +310,33 @@ func short(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// registryHost extracts the registry hostname from an image reference.
+// "ghcr.io/user/app:tag" → "ghcr.io", "nginx:latest" → "registry-1.docker.io".
+func registryHost(ref string) string {
+	// Strip digest
+	if idx := strings.Index(ref, "@"); idx != -1 {
+		ref = ref[:idx]
+	}
+	// Strip tag (last colon after last slash)
+	lastSlash := strings.LastIndex(ref, "/")
+	if idx := strings.LastIndex(ref, ":"); idx > lastSlash {
+		ref = ref[:idx]
+	}
+	first, _, hasSlash := strings.Cut(ref, "/")
+	if hasSlash && (strings.ContainsAny(first, ".:") || first == "localhost") {
+		return first
+	}
+	return "registry-1.docker.io"
+}
+
+// encodeAuth returns the base64-encoded JSON auth string Docker expects in
+// PullOptions.RegistryAuth.
+func encodeAuth(username, password string) string {
+	b, _ := json.Marshal(struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}{Username: username, Password: password})
+	return base64.URLEncoding.EncodeToString(b)
 }
