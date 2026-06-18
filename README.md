@@ -243,7 +243,7 @@ SECRET=$(openssl rand -hex 32)
 
 # Sign the payload
 PAYLOAD='{"image":"yourrepo/myapp","tag":"1.2.3"}'
-SIG="sha256=$(echo -n "$PAYLOAD" | openssl dgmac -sha256 -hmac "$SECRET" | tr -d ' \n')"
+SIG="sha256=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $NF}')"
 
 curl -X POST http://dockwatch:3010/webhook/push \
   -H "Content-Type: application/json" \
@@ -274,8 +274,8 @@ No signature is sent by Docker Hub — protect this endpoint with network-level 
       --arg digest "${{ steps.push.outputs.digest }}" \
       '{image: $image, tag: $tag, digest: $digest, source: "github-actions"}')
 
-    SIG="sha256=$(echo -n "$PAYLOAD" | openssl dgmac -sha256 \
-      -hmac "${{ secrets.DOCKWATCH_WEBHOOK_SECRET }}")"
+    SIG="sha256=$(echo -n "$PAYLOAD" | openssl dgst -sha256 \
+      -hmac "${{ secrets.DOCKWATCH_WEBHOOK_SECRET }}" | awk '{print $NF}')"
 
     curl -sf -X POST https://your-dockwatch-host/webhook/push \
       -H "Content-Type: application/json" \
@@ -290,7 +290,7 @@ notify_dockwatch:
   script:
     - |
       PAYLOAD="{\"image\":\"$CI_REGISTRY_IMAGE\",\"tag\":\"$CI_COMMIT_SHA\",\"source\":\"gitlab-ci\"}"
-      SIG="sha256=$(echo -n "$PAYLOAD" | openssl dgmac -sha256 -hmac "$DOCKWATCH_WEBHOOK_SECRET")"
+      SIG="sha256=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$DOCKWATCH_WEBHOOK_SECRET" | awk '{print $NF}')"
       curl -sf -X POST https://your-dockwatch-host/webhook/push \
         -H "Content-Type: application/json" \
         -H "X-Dockwatch-Signature: $SIG" \

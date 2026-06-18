@@ -1,10 +1,36 @@
 services:
+  traefik:
+    image: traefik:v3.3
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false   # opt-in via traefik.enable=true
+      - --providers.docker.network=proxy
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      # Redirect HTTP → HTTPS
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --entrypoints.web.http.redirections.entryPoint.scheme=https
+      # Let's Encrypt (change email)
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.le.acme.email=your@email.com
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
+    networks:
+      - proxy
+
   dockwatch:
     image: dockwatch:latest          # or build: .
     container_name: dockwatch
     restart: unless-stopped
-    ports:
-      - "3010:3010"                  # Web UI + REST API + SSE
+    # No ports: — Traefik terminates TLS and proxies to :3010
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./data:/data                              # persists SQLite DB and compose file backups
@@ -15,11 +41,51 @@ services:
       DOCKWATCH_HEALTH_GRACE:     "30s"            # health watch window post-update
       DOCKWATCH_DRY_RUN:          "false"          # set "true" to disable all actions
       DOCKWATCH_WEBHOOK_SECRET:   "changeme"       # openssl rand -hex 32
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "proxy"
+      traefik.http.routers.dockwatch.rule: "Host(`dockwatch.example.com`)"
+      traefik.http.routers.dockwatch.entrypoints: "websecure"
+      traefik.http.routers.dockwatch.tls.certresolver: "le"
+      traefik.http.services.dockwatch.loadbalancer.server.port: "3010"
+      # SSE keep-alive: disable response buffering so /api/events streams cleanly
+      traefik.http.middlewares.dockwatch-sse.headers.customResponseHeaders.X-Accel-Buffering: "no"
+      traefik.http.routers.dockwatch.middlewares: "dockwatch-sse"
+    networks:
+      - proxy
 
-  # Example watched container — label controls update strategy
+  # ── Example watched service with zero-downtime ───────────────────────────────
+  # NO container_name — explicit names break --scale
+  # NO ports — Traefik routes to the internal network port
   nginx:
     image: nginx:alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     labels:
-      dockwatch.watch:          "true"
-      dockwatch.update:         "patch"    # auto on patch, notify on minor/major
-      dockwatch.health.grace:   "30s"      # override health window for this container
+      # dockwatch labels
+      dockwatch.watch:            "true"
+      dockwatch.update:           "patch"    # auto on patch, notify on minor/major
+      dockwatch.compose.update:   "auto"     # edit compose file + docker compose up
+      dockwatch.zero-downtime:    "true"     # scale 2 → health-check → scale 1
+      dockwatch.health.grace:     "30s"
+      # Traefik labels — auto-discovered on both replicas during scale-up window
+      traefik.enable: "true"
+      traefik.docker.network: "proxy"
+      traefik.http.routers.nginx.rule: "Host(`app.example.com`)"
+      traefik.http.routers.nginx.entrypoints: "websecure"
+      traefik.http.routers.nginx.tls.certresolver: "le"
+      traefik.http.services.nginx.loadbalancer.server.port: "80"
+      # Health-gate: Traefik only routes to containers that pass the health check
+      traefik.http.services.nginx.loadbalancer.healthcheck.path: "/"
+      traefik.http.services.nginx.loadbalancer.healthcheck.interval: "5s"
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true   # create once: docker network create proxy
