@@ -108,6 +108,7 @@ func main() {
 				name = strings.TrimPrefix(c.Names[0], "/")
 			}
 			st.Upsert(c.ID, name, c.Image, c.Labels)
+			log.Info("watching container", "name", name, "image", c.Image, "id", c.ID[:12])
 		}
 		log.Info("store seeded with existing containers", "count", len(existing))
 	}
