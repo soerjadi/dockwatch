@@ -81,7 +81,13 @@ func main() {
 	}
 	defer dock.Close()
 
-	reg := registry.New()
+	reg := registry.New(registry.Config{
+		DockerHubUsername: cfg.DockerHubUsername,
+		DockerHubPassword: cfg.DockerHubPassword,
+		GHCRToken:         cfg.GHCRToken,
+		RegistryUsername:  cfg.RegistryUsername,
+		RegistryPassword:  cfg.RegistryPassword,
+	})
 	gh := github.New(cfg.GitHubToken)
 
 	hist, err := history.Open(cfg.HistoryDBPath, cfg.HistoryDir)

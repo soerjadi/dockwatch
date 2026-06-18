@@ -67,10 +67,37 @@ type Config struct {
 	// remote agents connecting to the controller's WebSocket endpoint.
 	// If empty, any agent may connect (dev only — set in production).
 	AgentToken string
+
+	// Registry credentials — used by the fallback poller and manual update checks.
+
+	// DockerHubUsername / DockerHubPassword authenticate against Docker Hub
+	// for private repositories. Public repositories work without credentials.
+	DockerHubUsername string
+	DockerHubPassword string
+
+	// GHCRToken authenticates against ghcr.io (GitHub Container Registry).
+	// A GitHub PAT with read:packages scope. Falls back to GITHUB_TOKEN if unset.
+	GHCRToken string
+
+	// RegistryUsername / RegistryPassword are used for all other registries:
+	// Quay, Harbor, Nexus, generic private, and cloud registries.
+	//
+	// AWS ECR:  username="AWS"               password=$(aws ecr get-login-password --region <region>)
+	// GCR/GAR:  username="oauth2accesstoken" password=$(gcloud auth print-access-token)
+	// Azure ACR: username=<client-id>         password=<client-secret or token>
+	RegistryUsername string
+	RegistryPassword string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
+	// DOCKWATCH_GHCR_TOKEN takes precedence; fall back to GITHUB_TOKEN so
+	// users who already set GITHUB_TOKEN for release notes don't need a second var.
+	ghcrToken := os.Getenv("DOCKWATCH_GHCR_TOKEN")
+	if ghcrToken == "" {
+		ghcrToken = os.Getenv("GITHUB_TOKEN")
+	}
+
 	c := &Config{
 		Addr:          getEnv("DOCKWATCH_ADDR", ":3010"),
 		DockerHost:    getEnv("DOCKWATCH_DOCKER_HOST", ""),
@@ -84,6 +111,12 @@ func Load() *Config {
 		HistoryDir:    getEnv("DOCKWATCH_HISTORY_DIR", "/data/history"),
 		ZeroDTTimeout: getDuration("DOCKWATCH_ZERO_DT_TIMEOUT", 60*time.Second),
 		AgentToken:    getEnv("DOCKWATCH_AGENT_TOKEN", ""),
+
+		DockerHubUsername: getEnv("DOCKWATCH_DOCKERHUB_USERNAME", ""),
+		DockerHubPassword: getEnv("DOCKWATCH_DOCKERHUB_PASSWORD", ""),
+		GHCRToken:         ghcrToken,
+		RegistryUsername:  getEnv("DOCKWATCH_REGISTRY_USERNAME", ""),
+		RegistryPassword:  getEnv("DOCKWATCH_REGISTRY_PASSWORD", ""),
 	}
 	return c
 }
