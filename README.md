@@ -93,6 +93,14 @@
 │  │ No UI polling   │ │ POST /api/       │ │                │  │
 │  │                 │ │   rollback/:id  │ │                │  │
 │  └─────────────────┘ │ GET  /api/events│ └────────────────┘  │
+│                      │ GET  /api/       │                      │
+│                      │   history       │                      │
+│                      │ GET  /api/agents│                      │
+│                      │ POST /api/       │                      │
+│                      │  agents/:h/     │                      │
+│                      │  update         │                      │
+│                      │ GET  /agent/    │                      │
+│                      │   connect (WS)  │                      │
 │                      │ POST /webhook/  │                      │
 │                      │   push          │                      │
 │                      │ POST /webhook/  │                      │
@@ -114,7 +122,7 @@
 ### In-Memory State Store
 
 Each container gets a `ContainerState` with a **ring buffer of the last 5 image digests**.  
-The Rollback Engine reads `PreviousDigest()` from this buffer — no external state, no database.
+The Rollback Engine reads `PreviousDigest()` from this buffer for instant rollback.
 
 ```
 Container: nginx
@@ -123,6 +131,10 @@ Container: nginx
   digest[2] sha256:ghi...  ← 2 versions ago
 ```
 
+For compose-managed containers, update history is also persisted to SQLite (`/data/dockwatch.db`)  
+and compose file snapshots are stored in `/data/history/` before each change, enabling  
+rollback to any prior state even across dockwatch restarts.
+
 ---
 
 ## Project Structure
@@ -130,8 +142,10 @@ Container: nginx
 ```
 dockwatch/
 ├── cmd/
-│   └── dockwatch/
-│       └── main.go          # entrypoint — wires all components
+│   ├── dockwatch/
+│   │   └── main.go          # controller entrypoint — wires all components
+│   └── agent/
+│       └── main.go          # headless agent binary (remote hosts)
 ├── internal/
 │   ├── bus/
 │   │   ├── bus.go           # in-memory pub/sub (Go channels)
@@ -142,14 +156,31 @@ dockwatch/
 │   │   └── watcher.go       # Docker event stream subscriber
 │   ├── registry/
 │   │   └── registry.go      # HEAD manifest check (no full pull)
+│   ├── poller/
+│   │   └── poller.go        # cron-scheduled registry sweep (fallback)
 │   ├── executor/
 │   │   └── executor.go      # update executor + semver strategy
+│   ├── compose/
+│   │   ├── compose.go       # compose metadata from container labels
+│   │   ├── updater.go       # AST YAML image-tag rewriter
+│   │   ├── runner.go        # docker compose up -d --no-deps
+│   │   └── zerodt.go        # scale-up → health-check → scale-down
 │   ├── healthmon/
 │   │   └── healthmon.go     # post-update health watch window
 │   ├── rollback/
 │   │   └── rollback.go      # auto rollback on container.unhealthy
+│   ├── history/
+│   │   └── history.go       # SQLite update log + compose backup paths
+│   ├── github/
+│   │   └── github.go        # optional release note enrichment (breaking changes)
+│   ├── agentproto/
+│   │   └── proto.go         # shared WebSocket message types
+│   ├── agentserver/
+│   │   └── server.go        # controller-side WebSocket hub
 │   ├── notifier/
 │   │   └── notifier.go      # SSE push + structured log dispatcher
+│   ├── webhook/
+│   │   └── webhook.go       # inbound webhook receiver (push + dockerhub)
 │   └── api/
 │       └── api.go           # REST API + SSE server
 ├── config/
@@ -280,6 +311,11 @@ All configuration is via environment variables — no config file needed.
 | `DOCKWATCH_HEALTH_GRACE` | `30s` | How long to watch a container post-update |
 | `DOCKWATCH_DRY_RUN` | `false` | Disable all destructive actions |
 | `DOCKWATCH_WEBHOOK_SECRET` | `""` | HMAC-SHA256 secret for `/webhook/push` validation |
+| `DOCKWATCH_HISTORY_DB` | `/data/dockwatch.db` | SQLite database path for update history |
+| `DOCKWATCH_HISTORY_DIR` | `/data/history` | Directory for compose file backups (rollback snapshots) |
+| `DOCKWATCH_ZERO_DT_TIMEOUT` | `60s` | Max wait for new container to become healthy in zero-downtime mode |
+| `DOCKWATCH_AGENT_TOKEN` | `""` | Shared token for authenticating remote agents (empty = no auth) |
+| `GITHUB_TOKEN` | `""` | GitHub PAT for release note enrichment (raises rate limit 60→5000 req/hr) |
 
 ---
 
@@ -292,6 +328,8 @@ Per-container behaviour is controlled via Docker labels:
 | `dockwatch.watch` | `true` / `false` | Include this container (default: all) |
 | `dockwatch.update` | `auto` / `minor` / `patch` / `notify` | Update strategy |
 | `dockwatch.health.grace` | duration e.g. `60s` | Override health grace window |
+| `dockwatch.compose.update` | `auto` / `notify` | Enable compose-first update path (default: `notify`) |
+| `dockwatch.zero-downtime` | `true` | Enable zero-downtime mode (requires `dockwatch.compose.update=auto`) |
 
 **Update strategy rules:**
 
@@ -299,6 +337,55 @@ Per-container behaviour is controlled via Docker labels:
 - `minor` — auto-apply minor + patch; notify-only on major
 - `patch` — auto-apply patch only; notify-only on minor + major
 - `notify` — never auto-update; only send notifications
+
+**Compose update path** (`dockwatch.compose.update=auto`):  
+dockwatch edits the compose file in-place using an AST YAML parser (comments and formatting preserved), then runs `docker compose up -d --no-deps <service>`. Requires the compose file directory to be mounted writable.
+
+**Zero-downtime mode** (`dockwatch.zero-downtime=true`):  
+Scales the service to 2 replicas, waits for the new container to pass its health check (up to `DOCKWATCH_ZERO_DT_TIMEOUT`), then scales back to 1. Traefik auto-discovers both containers during the overlap window via existing labels — no reverse proxy reconfiguration needed. For Caddy or nginx, routing is the user's responsibility.
+
+---
+
+## Multi-Host Agent
+
+For managing containers across multiple Docker hosts, dockwatch ships a headless `dockwatch-agent` binary that connects **outbound** to the controller over WebSocket — no inbound firewall ports needed on the agent host.
+
+```
+Remote Host                    Controller
+──────────────────             ───────────────────────────────
+dockwatch-agent  ──WS────────► GET /agent/connect
+                               (authenticates via shared token)
+                 ◄──command──  POST /api/agents/:hostname/update
+                 ──output────►  (streamed to controller logs)
+```
+
+**Run the agent on a remote host:**
+
+```bash
+docker run -d \
+  --name dockwatch-agent \
+  -e DOCKWATCH_CONTROLLER_URL=wss://dockwatch.example.com/agent/connect \
+  -e DOCKWATCH_AGENT_TOKEN=your-shared-secret \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /path/to/compose/projects:/projects \
+  dockwatch-agent
+```
+
+**Dispatch an update to a specific host:**
+
+```bash
+curl -X POST http://dockwatch:3010/api/agents/my-remote-host/update \
+  -H "Content-Type: application/json" \
+  -d '{"service": "nginx", "image": "nginx:1.25"}'
+```
+
+**List connected agents:**
+
+```bash
+curl http://dockwatch:3010/api/agents
+```
+
+The agent reconnects automatically with exponential backoff if the controller is temporarily unavailable.
 
 ---
 
@@ -313,11 +400,16 @@ Per-container behaviour is controlled via Docker labels:
 | HMAC signature validation | ✅ Complete | `internal/webhook` — `X-Dockwatch-Signature` header |
 | REST API + SSE | ✅ Complete | `internal/api` |
 | Notifier (SSE + log) | ✅ Complete | `internal/notifier` |
-| Docker event watcher | 🔧 Interface only | Wire real Docker SDK client via `watcher.DockerClient` |
-| Registry HEAD check | 🔧 Stub | Implement token + HEAD request (fallback only) |
-| Update executor | 🔧 Skeleton | Wire Docker SDK stop/pull/start |
-| Health monitor | 🔧 Skeleton | Wire Docker inspect for health status |
-| Rollback engine | 🔧 Skeleton | Wire Docker SDK image pull by digest |
+| Docker event watcher | ✅ Complete | Real-time event stream — start, die, destroy, health_status |
+| Registry HEAD check | ✅ Complete | Token fetch + HEAD manifest; wired to manual API and cron poller |
+| Update executor | ✅ Complete | Semver strategy, breaking-change detection, compose + direct Docker paths |
+| Health monitor | ✅ Complete | Polls `InspectContainer` every 3 s; triggers rollback on `unhealthy` |
+| Rollback engine | ✅ Complete | Pulls previous digest, recreates container; publishes `rollback.done` |
+| Compose-first updater | ✅ Complete | AST YAML edit (comment-preserving) + `docker compose up -d --no-deps` |
+| Zero-downtime updates | ✅ Complete | Scale to 2 → health-check new container → scale back to 1 |
+| Persistent history | ✅ Complete | SQLite update log + compose file backups before each change |
+| Breaking-change detection | ✅ Complete | Major semver bump flagged; optional GitHub release note enrichment |
+| Multi-host agent | ✅ Complete | Outbound WebSocket agent binary; controller hub with dispatch API |
 
 ---
 
