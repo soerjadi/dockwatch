@@ -30,6 +30,7 @@ import (
 	"github.com/soerjadi/dockwatch/internal/agentserver"
 	"github.com/soerjadi/dockwatch/internal/api"
 	"github.com/soerjadi/dockwatch/internal/bus"
+	"github.com/soerjadi/dockwatch/internal/deploy"
 	"github.com/soerjadi/dockwatch/internal/dockerclient"
 	"github.com/soerjadi/dockwatch/internal/executor"
 	"github.com/soerjadi/dockwatch/internal/github"
@@ -124,13 +125,14 @@ func main() {
 	}
 
 	w := watcher.New(dock, b, st, log)
-	exec := executor.New(dock, b, st, gh, hist, cfg.ZeroDTTimeout, log)
+	jobRegistry := deploy.NewRegistry()
+	exec := executor.New(dock, b, st, gh, hist, cfg.ZeroDTTimeout, log, jobRegistry)
 	hmon := healthmon.New(dock, b, st, log)
 	rb := rollback.New(dock, b, st, log)
 	ntfy := notifier.New(b, log)
 	poll := poller.New(b, st, reg, cfg.RegistryCron, log)
 	agentHub := agentserver.New(cfg.AgentToken, log)
-	srv := api.New(cfg.Addr, b, st, ntfy, reg, hist, agentHub, cfg.WebhookSecret, log)
+	srv := api.New(cfg.Addr, b, st, ntfy, reg, hist, agentHub, cfg.WebhookSecret, log, jobRegistry)
 
 	// ── Run all components concurrently ───────────────────────────────────────
 	var wg sync.WaitGroup

@@ -18,6 +18,7 @@ import (
 
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/compose"
+	"github.com/soerjadi/dockwatch/internal/deploy"
 	"github.com/soerjadi/dockwatch/internal/dockerclient"
 	"github.com/soerjadi/dockwatch/internal/github"
 	"github.com/soerjadi/dockwatch/internal/history"
@@ -53,14 +54,16 @@ type Executor struct {
 	history       *history.Store
 	zeroDTTimeout time.Duration
 	log           *slog.Logger
+	jobRegistry   *deploy.JobRegistry
 }
 
-// New creates an Executor.
-func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, zeroDTTimeout time.Duration, log *slog.Logger) *Executor {
+// New creates an Executor. jobRegistry is injected so the executor can create
+// and track a DeployJob for every apply it performs.
+func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, zeroDTTimeout time.Duration, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Executor {
 	if zeroDTTimeout == 0 {
 		zeroDTTimeout = zeroDTDefaultTimeout
 	}
-	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, zeroDTTimeout: zeroDTTimeout, log: log}
+	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, zeroDTTimeout: zeroDTTimeout, log: log, jobRegistry: jobRegistry}
 }
 
 // Run starts the executor loop. Blocks until ctx is cancelled.
@@ -146,10 +149,26 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 		return
 	}
 
-	newID, backupPath, err := e.apply(ctx, p, cs)
+	// Create and register a DeployJob before applying. The trigger source for
+	// bus-driven updates is always "poll" (webhook handler registers its own job).
+	var job *deploy.DeployJob
+	if e.jobRegistry != nil {
+		job = deploy.NewJob(p.ContainerName, p.Image, "poll")
+		_ = e.jobRegistry.Register(job)
+		defer e.jobRegistry.Finish(job.ID)
+		job.Transition(deploy.StatusRunning)
+	}
+
+	newID, backupPath, err := e.apply(ctx, p, cs, job)
 	if err != nil {
+		if job != nil {
+			job.Transition(deploy.StatusFailed)
+		}
 		e.log.Error("update failed", "container", p.ContainerName, "err", err)
 		return
+	}
+	if job != nil {
+		job.Transition(deploy.StatusSuccess)
 	}
 
 	// For the compose path newID is "" — watcher rebuilds state on container:start.
@@ -269,7 +288,8 @@ func shortDigest(d string) string {
 // it uses the direct Docker API path (Recreate). Returns the new container ID
 // for the direct path, or "" for the compose path (the watcher rebuilds state
 // from the container:start event that compose triggers).
-func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *store.ContainerState) (string, string, error) {
+// job is passed through for log streaming and may be nil (direct/docker path).
+func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *store.ContainerState, job *deploy.DeployJob) (string, string, error) {
 	// Compose paths: edit compose file, run docker compose up
 	if info := compose.FromLabels(cs.Labels); info != nil && cs.Labels[labelComposeUpdate] == "auto" {
 		newTag := imageTag(p.Image)
@@ -289,7 +309,7 @@ func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *sto
 
 		// Standard compose path: patch file + docker compose up -d
 		e.log.Info("applying compose update", "service", info.Service, "tag", newTag)
-		backupPath, err := compose.ApplyUpdate(ctx, info, newTag, histDir, e.log)
+		backupPath, err := compose.ApplyUpdate(ctx, info, newTag, histDir, e.log, job)
 		return "", backupPath, err
 	}
 

@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/soerjadi/dockwatch/internal/bus"
+	"github.com/soerjadi/dockwatch/internal/deploy"
 	"github.com/soerjadi/dockwatch/internal/store"
 )
 
@@ -66,18 +67,20 @@ type DockerHubPayload struct {
 
 // Handler handles inbound webhook requests.
 type Handler struct {
-	bus    *bus.Bus
-	store  *store.Store
-	secret string
-	log    *slog.Logger
+	bus         *bus.Bus
+	store       *store.Store
+	secret      string
+	log         *slog.Logger
+	jobRegistry *deploy.JobRegistry
 }
 
 // New creates a Handler. secret is the HMAC shared secret; pass "" to skip validation.
-func New(b *bus.Bus, st *store.Store, secret string, log *slog.Logger) *Handler {
+// jobRegistry is used to create and track a DeployJob for each push (may be nil in tests).
+func New(b *bus.Bus, st *store.Store, secret string, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Handler {
 	if secret == "" {
 		log.Warn("webhook secret is empty — signature validation disabled (not safe for production)")
 	}
-	return &Handler{bus: b, store: st, secret: secret, log: log}
+	return &Handler{bus: b, store: st, secret: secret, log: log, jobRegistry: jobRegistry}
 }
 
 // RegisterRoutes mounts the webhook endpoints onto the given mux.
@@ -118,11 +121,22 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 
 	h.dispatch(p.Image, p.Tag, p.Digest, p.Source)
 
+	// Create a queued DeployJob so the caller gets a deploy_id to track progress
+	// (AC#1). The executor will transition it to running/success/failed when it
+	// picks up the TopicImageUpdated event from the bus.
+	deployID := ""
+	if h.jobRegistry != nil {
+		job := deploy.NewJob(p.Image+":"+p.Tag, p.Image+":"+p.Tag, "webhook")
+		_ = h.jobRegistry.Register(job)
+		deployID = job.ID
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status": "accepted",
-		"image":  p.Image + ":" + p.Tag,
+		"deploy_id": deployID,
+		"status":    "queued",
+		"image":     p.Image + ":" + p.Tag,
 	})
 }
 

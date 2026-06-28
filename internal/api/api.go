@@ -30,6 +30,7 @@ import (
 	"github.com/soerjadi/dockwatch/internal/agentproto"
 	"github.com/soerjadi/dockwatch/internal/agentserver"
 	"github.com/soerjadi/dockwatch/internal/bus"
+	"github.com/soerjadi/dockwatch/internal/deploy"
 	"github.com/soerjadi/dockwatch/internal/history"
 	"github.com/soerjadi/dockwatch/internal/notifier"
 	"github.com/soerjadi/dockwatch/internal/registry"
@@ -39,21 +40,23 @@ import (
 
 // Server is the HTTP API server.
 type Server struct {
-	bus        *bus.Bus
-	store      *store.Store
-	notifier   *notifier.Notifier
-	registry   *registry.Client
-	history    *history.Store
-	agentHub   *agentserver.Server
-	log        *slog.Logger
-	server     *http.Server
+	bus         *bus.Bus
+	store       *store.Store
+	notifier    *notifier.Notifier
+	registry    *registry.Client
+	history     *history.Store
+	agentHub    *agentserver.Server
+	jobRegistry *deploy.JobRegistry
+	log         *slog.Logger
+	server      *http.Server
 }
 
 // New creates an API Server bound to addr (e.g. ":3010").
 // webhookSecret is the HMAC-SHA256 shared secret for /webhook/push;
 // pass "" to disable signature validation (dev only).
-func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, hist *history.Store, agentHub *agentserver.Server, webhookSecret string, log *slog.Logger) *Server {
-	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, agentHub: agentHub, log: log}
+// jobRegistry tracks in-flight deploys and is exposed via GET /api/deploys/:id/status.
+func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, hist *history.Store, agentHub *agentserver.Server, webhookSecret string, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Server {
+	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, agentHub: agentHub, jobRegistry: jobRegistry, log: log}
 
 	mux := http.NewServeMux()
 
@@ -67,9 +70,10 @@ func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *re
 	mux.HandleFunc("/api/agents/", s.handleAgentDispatch)
 	mux.Handle("/agent/connect", s.agentHub)
 	mux.HandleFunc("/api/events", s.handleSSE)
+	mux.HandleFunc("/api/deploys/", s.handleDeployStatus)
 
 	// Inbound webhooks — CI/CD pushes here instead of dockwatch polling
-	wh := webhook.New(b, st, webhookSecret, log)
+	wh := webhook.New(b, st, webhookSecret, log, jobRegistry)
 	wh.RegisterRoutes(mux)
 
 	s.server = &http.Server{
@@ -101,6 +105,43 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleDeployStatus handles GET /api/deploys/:id/status.
+// Returns the current status snapshot for a deploy job (AC#2: ≤50 ms).
+//
+//	GET /api/deploys/{deploy_id}/status
+//
+// Response:
+//
+//	{"id":"...","status":"running","started_at":"...","log_count":42}
+func (s *Server) handleDeployStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.jobRegistry == nil {
+		http.Error(w, "deploy tracking not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Path: /api/deploys/{id}/status — extract the UUID segment.
+	path := strings.TrimPrefix(r.URL.Path, "/api/deploys/")
+	parts := strings.SplitN(path, "/", 2)
+	id := parts[0]
+	if id == "" {
+		http.Error(w, "deploy id required", http.StatusBadRequest)
+		return
+	}
+
+	job, ok := s.jobRegistry.Get(id)
+	if !ok {
+		http.Error(w, "deploy not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(job.Snap())
 }
 
 // handleContainers returns all tracked containers and their current state.
