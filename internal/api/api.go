@@ -36,6 +36,8 @@ import (
 	"github.com/soerjadi/dockwatch/internal/registry"
 	"github.com/soerjadi/dockwatch/internal/store"
 	"github.com/soerjadi/dockwatch/internal/webhook"
+	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wsjson"
 )
 
 // Server is the HTTP API server.
@@ -71,6 +73,7 @@ func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *re
 	mux.Handle("/agent/connect", s.agentHub)
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/deploys/", s.handleDeployStatus)
+	mux.HandleFunc("GET /api/deploys/{deploy_id}/logs", s.handleDeployLogs)
 
 	// Inbound webhooks — CI/CD pushes here instead of dockwatch polling
 	wh := webhook.New(b, st, webhookSecret, log, jobRegistry)
@@ -367,3 +370,59 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// WSMessage Type
+type WSMessage struct {
+	Type   string          `json:"type"`             // "log" | "done"
+	Line   *deploy.LogLine `json:"line,omitempty"`
+	Status string          `json:"status,omitempty"` // present on "done"
+}
+
+// handleDeployLogs streams deploy logs over WebSocket.
+func (s *Server) handleDeployLogs(w http.ResponseWriter, r *http.Request) {
+	deployID := r.PathValue("deploy_id")
+	if deployID == "" {
+		http.Error(w, "deploy id required", http.StatusBadRequest)
+		return
+	}
+
+	if s.jobRegistry == nil {
+		http.Error(w, "deploy tracking not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	job, ok := s.jobRegistry.Get(deployID)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	ctx := r.Context()
+
+	// Replay
+	for _, line := range job.Logs() {
+		msg := WSMessage{Type: "log", Line: &line}
+		if err := wsjson.Write(ctx, conn, msg); err != nil {
+			return
+		}
+	}
+
+	// Live stream
+	for line := range job.LogCh {
+		msg := WSMessage{Type: "log", Line: &line}
+		if err := wsjson.Write(ctx, conn, msg); err != nil {
+			return
+		}
+	}
+
+	// After LogCh closes
+	doneMsg := WSMessage{Type: "done", Status: string(job.Snap().Status)}
+	_ = wsjson.Write(ctx, conn, doneMsg)
+}
+
