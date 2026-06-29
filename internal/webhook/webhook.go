@@ -37,6 +37,7 @@ import (
 
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/deploy"
+	"github.com/soerjadi/dockwatch/internal/serviceconfig"
 	"github.com/soerjadi/dockwatch/internal/store"
 )
 
@@ -72,15 +73,14 @@ type Handler struct {
 	secret      string
 	log         *slog.Logger
 	jobRegistry *deploy.JobRegistry
+	config      *serviceconfig.Manager
 }
 
-// New creates a Handler. secret is the HMAC shared secret; pass "" to skip validation.
-// jobRegistry is used to create and track a DeployJob for each push (may be nil in tests).
-func New(b *bus.Bus, st *store.Store, secret string, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Handler {
+func New(b *bus.Bus, st *store.Store, secret string, log *slog.Logger, jobRegistry *deploy.JobRegistry, config *serviceconfig.Manager) *Handler {
 	if secret == "" {
 		log.Warn("webhook secret is empty — signature validation disabled (not safe for production)")
 	}
-	return &Handler{bus: b, store: st, secret: secret, log: log, jobRegistry: jobRegistry}
+	return &Handler{bus: b, store: st, secret: secret, log: log, jobRegistry: jobRegistry, config: config}
 }
 
 // RegisterRoutes mounts the webhook endpoints onto the given mux.
@@ -119,13 +119,31 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// We also need to fail the API request if ANY container matches and is in poll mode.
+	// But it's easier to check upfront if any container is in poll mode.
+	affected := h.containersForImage(p.Image, p.Tag)
+	hasPollMode := false
+	for _, cs := range affected {
+		if svc, ok := h.config.Get(cs.Name); ok && svc.TriggerMode == "poll" {
+			hasPollMode = true
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":        "deploy rejected: service is in poll mode",
+				"service":      cs.Name,
+				"trigger_mode": "poll",
+				"hint":         "::notice::dockwatch: " + cs.Name + " uses poll mode — webhook ignored",
+			})
+			return
+		}
+	}
+
 	h.dispatch(p.Image, p.Tag, p.Digest, p.Source)
 
 	// Create a queued DeployJob so the caller gets a deploy_id to track progress
 	// (AC#1). The executor will transition it to running/success/failed when it
 	// picks up the TopicImageUpdated event from the bus.
 	deployID := ""
-	if h.jobRegistry != nil {
+	if h.jobRegistry != nil && !hasPollMode {
 		job := deploy.NewJob(p.Image+":"+p.Tag, p.Image+":"+p.Tag, "webhook")
 		_ = h.jobRegistry.Register(job)
 		deployID = job.ID
@@ -201,6 +219,12 @@ func (h *Handler) dispatch(image, tag, digest, source string) {
 	}
 
 	for _, cs := range affected {
+		// Check trigger mode
+		if svc, ok := h.config.Get(cs.Name); ok && svc.TriggerMode == "poll" {
+			h.log.Info("webhook: ignored because service is in poll mode", "container", cs.Name)
+			continue
+		}
+
 		h.log.Info("webhook: publishing image.updated",
 			"container", cs.Name,
 			"image", fullImage,

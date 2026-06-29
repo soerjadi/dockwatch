@@ -34,6 +34,7 @@ import (
 	"github.com/soerjadi/dockwatch/internal/history"
 	"github.com/soerjadi/dockwatch/internal/notifier"
 	"github.com/soerjadi/dockwatch/internal/registry"
+	"github.com/soerjadi/dockwatch/internal/serviceconfig"
 	"github.com/soerjadi/dockwatch/internal/store"
 	"github.com/soerjadi/dockwatch/internal/webhook"
 	"nhooyr.io/websocket"
@@ -47,6 +48,7 @@ type Server struct {
 	notifier    *notifier.Notifier
 	registry    *registry.Client
 	history     *history.Store
+	config      *serviceconfig.Manager
 	agentHub    *agentserver.Server
 	jobRegistry *deploy.JobRegistry
 	log         *slog.Logger
@@ -57,8 +59,8 @@ type Server struct {
 // webhookSecret is the HMAC-SHA256 shared secret for /webhook/push;
 // pass "" to disable signature validation (dev only).
 // jobRegistry tracks in-flight deploys and is exposed via GET /api/deploys/:id/status.
-func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, hist *history.Store, agentHub *agentserver.Server, webhookSecret string, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Server {
-	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, agentHub: agentHub, jobRegistry: jobRegistry, log: log}
+func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, hist *history.Store, config *serviceconfig.Manager, agentHub *agentserver.Server, webhookSecret string, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Server {
+	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, config: config, agentHub: agentHub, jobRegistry: jobRegistry, log: log}
 
 	mux := http.NewServeMux()
 
@@ -74,9 +76,15 @@ func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *re
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/deploys/", s.handleDeployStatus)
 	mux.HandleFunc("GET /api/deploys/{deploy_id}/logs", s.handleDeployLogs)
+	
+	// Services Config
+	mux.HandleFunc("GET /api/services", s.handleGetServices)
+	mux.HandleFunc("POST /api/services", s.handleCreateService)
+	mux.HandleFunc("GET /api/services/{name}", s.handleGetService)
+	mux.HandleFunc("PATCH /api/services/{name}/config", s.handlePatchServiceConfig)
 
 	// Inbound webhooks — CI/CD pushes here instead of dockwatch polling
-	wh := webhook.New(b, st, webhookSecret, log, jobRegistry)
+	wh := webhook.New(b, st, webhookSecret, log, jobRegistry, config)
 	wh.RegisterRoutes(mux)
 
 	s.server = &http.Server{
@@ -425,4 +433,119 @@ func (s *Server) handleDeployLogs(w http.ResponseWriter, r *http.Request) {
 	doneMsg := WSMessage{Type: "done", Status: string(job.Snap().Status)}
 	_ = wsjson.Write(ctx, conn, doneMsg)
 }
+
+// handleGetServices lists all registered services with config.
+func (s *Server) handleGetServices(w http.ResponseWriter, r *http.Request) {
+	services := s.config.All()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(services)
+}
+
+// handleCreateService registers a new service.
+func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name           string `json:"name"`
+		Image          string `json:"image"`
+		ComposeFile    string `json:"compose_file"`
+		TriggerMode    string `json:"trigger_mode"`
+		PollerInterval int    `json:"poller_interval"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" || req.Image == "" {
+		http.Error(w, "name and image are required", http.StatusBadRequest)
+		return
+	}
+	if req.TriggerMode == "" {
+		req.TriggerMode = "poll"
+	}
+	if req.PollerInterval == 0 {
+		req.PollerInterval = 300
+	}
+	if req.PollerInterval < 30 {
+		http.Error(w, "poller_interval must be >= 30", http.StatusBadRequest)
+		return
+	}
+	if req.TriggerMode != "poll" && req.TriggerMode != "webhook" {
+		http.Error(w, "trigger_mode must be poll or webhook", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.config.CreateConfig(req.Name, req.Image, req.ComposeFile, req.TriggerMode, req.PollerInterval); err != nil {
+		s.log.Error("failed to create service config", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+// handleGetService gets config for one service.
+func (s *Server) handleGetService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+
+	svc, ok := s.config.Get(name)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(svc)
+}
+
+// handlePatchServiceConfig updates trigger_mode / poller_interval.
+func (s *Server) handlePatchServiceConfig(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+
+	svc, ok := s.config.Get(name)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		TriggerMode    string `json:"trigger_mode"`
+		PollerInterval int    `json:"poller_interval"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.TriggerMode == "" {
+		req.TriggerMode = svc.TriggerMode
+	}
+	if req.PollerInterval == 0 {
+		req.PollerInterval = int(svc.PollerInterval.Seconds())
+	}
+
+	if req.PollerInterval < 30 {
+		http.Error(w, "poller_interval must be >= 30", http.StatusBadRequest)
+		return
+	}
+	if req.TriggerMode != "poll" && req.TriggerMode != "webhook" {
+		http.Error(w, "trigger_mode must be poll or webhook", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.config.UpdateConfig(name, req.TriggerMode, req.PollerInterval); err != nil {
+		s.log.Error("failed to patch service config", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 

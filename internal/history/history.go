@@ -6,11 +6,7 @@ package history
 import (
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
-
-	_ "modernc.org/sqlite" // register "sqlite" driver
 )
 
 const schema = `
@@ -43,22 +39,10 @@ type Store struct {
 	histDir string // directory where compose file backups are written
 }
 
-// Open opens (or creates) the SQLite database at path and ensures the schema
-// exists. histDir is the directory used to store compose file backups.
-func Open(path, histDir string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("history: create db dir: %w", err)
-	}
-	if err := os.MkdirAll(histDir, 0o755); err != nil {
-		return nil, fmt.Errorf("history: create hist dir: %w", err)
-	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("history: open db: %w", err)
-	}
-	db.SetMaxOpenConns(1) // SQLite is single-writer
+// New creates a Store using the provided database connection and ensures the schema exists.
+// histDir is the directory used to store compose file backups.
+func New(db *sql.DB, histDir string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("history: apply schema: %w", err)
 	}
 	return &Store{db: db, histDir: histDir}, nil
