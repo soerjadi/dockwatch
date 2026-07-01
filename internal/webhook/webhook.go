@@ -37,6 +37,7 @@ import (
 
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/deploy"
+	"github.com/soerjadi/dockwatch/internal/history"
 	"github.com/soerjadi/dockwatch/internal/serviceconfig"
 	"github.com/soerjadi/dockwatch/internal/store"
 )
@@ -74,13 +75,14 @@ type Handler struct {
 	log         *slog.Logger
 	jobRegistry *deploy.JobRegistry
 	config      *serviceconfig.Manager
+	history     *history.Store
 }
 
-func New(b *bus.Bus, st *store.Store, secret string, log *slog.Logger, jobRegistry *deploy.JobRegistry, config *serviceconfig.Manager) *Handler {
+func New(b *bus.Bus, st *store.Store, secret string, log *slog.Logger, jobRegistry *deploy.JobRegistry, config *serviceconfig.Manager, hist *history.Store) *Handler {
 	if secret == "" {
 		log.Warn("webhook secret is empty — signature validation disabled (not safe for production)")
 	}
-	return &Handler{bus: b, store: st, secret: secret, log: log, jobRegistry: jobRegistry, config: config}
+	return &Handler{bus: b, store: st, secret: secret, log: log, jobRegistry: jobRegistry, config: config, history: hist}
 }
 
 // RegisterRoutes mounts the webhook endpoints onto the given mux.
@@ -126,6 +128,12 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 	for _, cs := range affected {
 		if svc, ok := h.config.Get(cs.Name); ok && svc.TriggerMode == "poll" {
 			hasPollMode = true
+			if h.history != nil {
+				if err := h.history.RecordSkipped(cs.Name, p.Image+":"+p.Tag,
+					"webhook rejected: service trigger_mode is poll"); err != nil {
+					h.log.Warn("history: failed to record skipped deploy", "container", cs.Name, "err", err)
+				}
+			}
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error":        "deploy rejected: service is in poll mode",

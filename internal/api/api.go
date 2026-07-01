@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,7 +85,7 @@ func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *re
 	mux.HandleFunc("PATCH /api/services/{name}/config", s.handlePatchServiceConfig)
 
 	// Inbound webhooks — CI/CD pushes here instead of dockwatch polling
-	wh := webhook.New(b, st, webhookSecret, log, jobRegistry, config)
+	wh := webhook.New(b, st, webhookSecret, log, jobRegistry, config, hist)
 	wh.RegisterRoutes(mux)
 
 	s.server = &http.Server{
@@ -254,7 +255,11 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "rollback triggered", "container": cs.Name})
 }
 
-// handleHistory returns the update history, optionally filtered by service name.
+// handleHistory returns paginated update history, optionally filtered by service.
+//
+//	GET /api/history?service=myapp&limit=20&offset=0
+//
+// Response: {"total":N,"limit":20,"offset":0,"items":[...]}
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -262,20 +267,23 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.history == nil {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]struct{}{})
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": 0, "limit": 50, "offset": 0, "items": []struct{}{}})
 		return
 	}
 
-	service := r.URL.Query().Get("service")
-	var (
-		entries []history.Entry
-		err     error
-	)
-	if service != "" {
-		entries, err = s.history.List(service)
-	} else {
-		entries, err = s.history.ListAll()
+	q := r.URL.Query()
+	service := q.Get("service")
+	limit := parseIntParam(q.Get("limit"), 50)
+	offset := parseIntParam(q.Get("offset"), 0)
+
+	total, err := s.history.Count(service)
+	if err != nil {
+		s.log.Error("handleHistory: count failed", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
+
+	entries, err := s.history.List(service, limit, offset)
 	if err != nil {
 		s.log.Error("handleHistory: db query failed", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -284,8 +292,25 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []history.Entry{}
 	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(entries)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"items":  entries,
+	})
+}
+
+func parseIntParam(s string, defaultVal int) int {
+	if s == "" {
+		return defaultVal
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil || v < 0 {
+		return defaultVal
+	}
+	return v
 }
 
 // handleAgents lists all currently connected remote agents.

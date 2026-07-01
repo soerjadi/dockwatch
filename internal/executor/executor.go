@@ -159,16 +159,49 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 		job.Transition(deploy.StatusRunning)
 	}
 
-	newID, backupPath, err := e.apply(ctx, p, cs, job)
+	// Record the deploy as "running" before the apply so every deploy has a row
+	// regardless of outcome. deploy_id links this row to the job for FinishDeploy.
+	if e.history != nil && job != nil {
+		snap := job.Snap()
+		if _, err := e.history.RecordDeploy(history.Entry{
+			AppName:       p.ContainerName,
+			Service:       p.ContainerName,
+			OldImage:      cs.Image,
+			NewImage:      p.Image,
+			ImageTag:      imageTag(p.Image),
+			DeployID:      job.ID,
+			TriggerSource: job.TriggerSource,
+			Status:        "running",
+			StartedAt:     snap.StartedAt,
+		}); err != nil {
+			e.log.Warn("history: failed to record deploy start", "container", p.ContainerName, "err", err)
+		}
+	}
+
+	newID, _, err := e.apply(ctx, p, cs, job)
 	if err != nil {
 		if job != nil {
 			job.Transition(deploy.StatusFailed)
 		}
 		e.log.Error("update failed", "container", p.ContainerName, "err", err)
+		if e.history != nil && job != nil {
+			if ferr := e.history.FinishDeploy(job.ID, "failed", time.Now()); ferr != nil {
+				e.log.Warn("history: failed to finish deploy", "container", p.ContainerName, "err", ferr)
+			}
+		}
 		return
 	}
 	if job != nil {
 		job.Transition(deploy.StatusSuccess)
+	}
+	if e.history != nil && job != nil {
+		endedAt := time.Now()
+		if snap := job.Snap(); snap.EndedAt != nil {
+			endedAt = *snap.EndedAt
+		}
+		if ferr := e.history.FinishDeploy(job.ID, "success", endedAt); ferr != nil {
+			e.log.Warn("history: failed to finish deploy", "container", p.ContainerName, "err", ferr)
+		}
 	}
 
 	// For the compose path newID is "" — watcher rebuilds state on container:start.
@@ -178,19 +211,6 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 			moved = cs
 		}
 		moved.PushDigest(p.Image, p.NewDigest)
-	}
-
-	if e.history != nil {
-		if _, err := e.history.Record(history.Entry{
-			AppName:    p.ContainerName,
-			Service:    p.ContainerName,
-			OldImage:   cs.Image,
-			NewImage:   p.Image,
-			BackupPath: backupPath,
-			CreatedAt:  time.Now(),
-		}); err != nil {
-			e.log.Warn("history: failed to record update", "container", p.ContainerName, "err", err)
-		}
 	}
 
 	e.bus.Publish(bus.TopicUpdateApplied, bus.UpdateAppliedPayload{
