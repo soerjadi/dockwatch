@@ -235,7 +235,7 @@ func (c *Client) RemoveContainer(ctx context.Context, id string) error {
 	if c.dryRun {
 		return nil
 	}
-	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{})
+	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
 }
 
 func (c *Client) CreateContainer(ctx context.Context, spec CreateSpec) (string, error) {

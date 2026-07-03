@@ -16,7 +16,7 @@ import (
 // job.AppendLog() line-by-line (AC#3: lines appear within 500 ms of emission).
 // Passing nil for job is safe — output is discarded (legacy behaviour).
 func UpService(ctx context.Context, workingDir, configFile, service string, log *slog.Logger, job *deploy.DeployJob) error {
-	args := []string{"compose", "-f", configFile, "up", "-d", "--no-deps", service}
+	args := []string{"compose", "-f", configFile, "up", "-d", "--pull", "always", "--no-deps", service}
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = workingDir
 

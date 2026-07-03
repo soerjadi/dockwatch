@@ -144,7 +144,7 @@ func removeContainers(ctx context.Context, ids []string, docker dockerclient.Sco
 
 func scaleCompose(ctx context.Context, info *Info, n int, noRecreate bool, log *slog.Logger) error {
 	scale := fmt.Sprintf("%s=%d", info.Service, n)
-	args := []string{"compose", "-f", info.ConfigFiles[0], "up", "-d", "--scale", scale}
+	args := []string{"compose", "-f", info.ConfigFiles[0], "up", "-d", "--pull", "always", "--scale", scale}
 	if noRecreate {
 		args = append(args, "--no-recreate")
 	}
