@@ -54,6 +54,7 @@ type Server struct {
 	jobRegistry *deploy.JobRegistry
 	log         *slog.Logger
 	server      *http.Server
+	startedAt   time.Time
 }
 
 // New creates an API Server bound to addr (e.g. ":3010").
@@ -61,7 +62,7 @@ type Server struct {
 // pass "" to disable signature validation (dev only).
 // jobRegistry tracks in-flight deploys and is exposed via GET /api/deploys/:id/status.
 func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *registry.Client, hist *history.Store, config *serviceconfig.Manager, agentHub *agentserver.Server, webhookSecret string, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Server {
-	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, config: config, agentHub: agentHub, jobRegistry: jobRegistry, log: log}
+	s := &Server{bus: b, store: st, notifier: n, registry: reg, history: hist, config: config, agentHub: agentHub, jobRegistry: jobRegistry, log: log, startedAt: time.Now()}
 
 	mux := http.NewServeMux()
 
@@ -116,7 +117,17 @@ func (s *Server) Run(ctx context.Context) error {
 // handleHealthz is a simple liveness probe.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	
+	activeDeploys := 0
+	if s.jobRegistry != nil {
+		activeDeploys = s.jobRegistry.ActiveCount()
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":         "ok",
+		"active_deploys": activeDeploys,
+		"uptime_seconds": int64(time.Since(s.startedAt).Seconds()),
+	})
 }
 
 // handleDeployStatus handles GET /api/deploys/:id/status.

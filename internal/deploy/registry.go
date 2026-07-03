@@ -59,3 +59,10 @@ func (r *JobRegistry) Finish(id string) {
 		delete(r.byContainer, j.ContainerName)
 	}
 }
+
+// ActiveCount returns the number of currently running deploys.
+func (r *JobRegistry) ActiveCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.byContainer)
+}
