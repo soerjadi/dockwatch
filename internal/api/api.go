@@ -89,6 +89,9 @@ func New(addr string, b *bus.Bus, st *store.Store, n *notifier.Notifier, reg *re
 	wh := webhook.New(b, st, webhookSecret, log, jobRegistry, config, hist)
 	wh.RegisterRoutes(mux)
 
+	// Serve the frontend UI
+	mux.Handle("/", http.FileServer(http.Dir("frontend")))
+
 	s.server = &http.Server{
 		Addr:         addr,
 		Handler:      mux,
