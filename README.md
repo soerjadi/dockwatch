@@ -214,6 +214,39 @@ SSE stream at `http://localhost:3010/api/events`.
 
 ---
 
+## How To...
+
+### View the Dashboard
+1. Start dockwatch (e.g. `docker compose up -d`).
+2. Navigate to `http://localhost:3010` in your web browser.
+3. The dashboard displays the live Deploy History and auto-refreshes every 10s.
+4. Click **Logs** on an active deployment to view real-time WebSocket logs.
+
+### Add a Container to Dockwatch
+By default, all containers on the docker socket are watched. To explicitly target or ignore a container, use docker labels in your compose file or `docker run` command:
+```yaml
+services:
+  myapp:
+    image: myrepo/myapp:latest
+    labels:
+      - "dockwatch.watch=true"
+      - "dockwatch.update=auto"
+```
+
+### Trigger an Update
+There are three ways to trigger an update for a container managed by dockwatch:
+1. **Webhook (Preferred)**: Call `POST http://localhost:3010/webhook/push` from your CI/CD pipeline right after pushing a new image.
+2. **Cron Poller**: Dockwatch will automatically poll the registry at `DOCKWATCH_REGISTRY_CRON` (default 4 AM daily) and update out-of-date containers.
+3. **Manual API**: Call `POST http://localhost:3010/api/update/<container-id>` to manually check for an update immediately.
+
+### Manually Rollback an Update
+If a deployment fails, dockwatch automatically rolls back. To manually initiate a rollback to the previous digest:
+```bash
+curl -X POST http://localhost:3010/api/rollback/<container-id>
+```
+
+---
+
 ## Inbound Webhooks
 
 This is the preferred way for dockwatch to learn about new images — **zero polling**.  
