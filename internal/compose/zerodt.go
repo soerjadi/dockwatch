@@ -36,25 +36,25 @@ func ZeroDowntimeUpdate(
 	cfg ZeroDTConfig,
 	docker dockerclient.Scoped,
 	log *slog.Logger,
-) (backupPath string, err error) {
+) (newID string, backupPath string, err error) {
 	if len(info.ConfigFiles) == 0 {
-		return "", fmt.Errorf("zero-downtime: no config files")
+		return "", "", fmt.Errorf("zero-downtime: no config files")
 	}
 	configFile := info.ConfigFiles[0]
 
 	// Snapshot the old container IDs before we touch anything.
 	oldIDs, err := currentContainerIDs(ctx, info, docker)
 	if err != nil {
-		return "", fmt.Errorf("zero-downtime: list current containers: %w", err)
+		return "", "", fmt.Errorf("zero-downtime: list current containers: %w", err)
 	}
 
 	backupPath, err = BackupFile(configFile, info.Service, histDir)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if err := UpdateServiceImage(configFile, info.Service, newTag); err != nil {
-		return backupPath, err
+		return "", backupPath, err
 	}
 
 	scaledUp := false
@@ -70,7 +70,7 @@ func ZeroDowntimeUpdate(
 
 	if err := scaleCompose(ctx, info, 2, true, log); err != nil {
 		restore()
-		return backupPath, fmt.Errorf("zero-downtime: scale up failed: %w", err)
+		return "", backupPath, fmt.Errorf("zero-downtime: scale up failed: %w", err)
 	}
 	scaledUp = true
 
@@ -91,21 +91,23 @@ func ZeroDowntimeUpdate(
 			log.Info("zero-downtime: healthy — removing old instance(s)",
 				"service", info.Service, "new_id", newID[:min(12, len(newID))])
 			if err := removeContainers(ctx, oldIDs, docker, log); err != nil {
-				return backupPath, fmt.Errorf("zero-downtime: remove old containers: %w", err)
+				return "", backupPath, fmt.Errorf("zero-downtime: remove old containers: %w", err)
 			}
-			return backupPath, nil
+			// Reset compose scale state to 1 (preserves the new container since we removed the old one)
+			_ = scaleCompose(ctx, info, 1, true, log)
+			return newID, backupPath, nil
 		}
 
 		select {
 		case <-ctx.Done():
 			restore()
-			return backupPath, ctx.Err()
+			return "", backupPath, ctx.Err()
 		case <-time.After(2 * time.Second):
 		}
 	}
 
 	restore()
-	return backupPath, fmt.Errorf("zero-downtime: new container did not become healthy within %s", timeout)
+	return "", backupPath, fmt.Errorf("zero-downtime: new container did not become healthy within %s", timeout)
 }
 
 // currentContainerIDs returns the IDs of all running containers for the service.

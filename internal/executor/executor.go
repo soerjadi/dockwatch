@@ -322,9 +322,9 @@ func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *sto
 		if cs.Labels[labelZeroDT] == "true" {
 			e.log.Info("applying zero-downtime compose update",
 				"service", info.Service, "tag", newTag)
-			backupPath, err := compose.ZeroDowntimeUpdate(ctx, info, newTag, histDir,
+			newID, backupPath, err := compose.ZeroDowntimeUpdate(ctx, info, newTag, histDir,
 				compose.ZeroDTConfig{Timeout: e.zeroDTTimeout}, e.docker, e.log)
-			return "", backupPath, err
+			return newID, backupPath, err
 		}
 
 		// Standard compose path: patch file + docker compose up -d
