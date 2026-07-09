@@ -48,6 +48,11 @@ func ZeroDowntimeUpdate(
 		return "", "", fmt.Errorf("zero-downtime: list current containers: %w", err)
 	}
 
+	scaleN := len(oldIDs)
+	if scaleN == 0 {
+		scaleN = 1
+	}
+
 	backupPath, err = BackupFile(configFile, info.Service, histDir)
 	if err != nil {
 		return "", "", err
@@ -64,11 +69,11 @@ func ZeroDowntimeUpdate(
 			log.Error("zero-downtime: failed to restore compose file", "err", restoreErr)
 		}
 		if scaledUp {
-			_ = scaleCompose(ctx, info, 1, true, log)
+			_ = scaleCompose(ctx, info, scaleN, true, log)
 		}
 	}
 
-	if err := scaleCompose(ctx, info, 2, true, log); err != nil {
+	if err := scaleCompose(ctx, info, scaleN*2, true, log); err != nil {
 		restore()
 		return "", backupPath, fmt.Errorf("zero-downtime: scale up failed: %w", err)
 	}
@@ -80,22 +85,27 @@ func ZeroDowntimeUpdate(
 	}
 	deadline := time.Now().Add(timeout)
 
-	log.Info("zero-downtime: waiting for new container to become healthy",
-		"service", info.Service, "timeout", timeout)
+	log.Info("zero-downtime: waiting for new containers to become healthy",
+		"service", info.Service, "timeout", timeout, "expected", scaleN)
 
 	for time.Now().Before(deadline) {
-		newID, healthy, checkErr := findNewestHealthy(ctx, info, docker)
+		newIDs, healthy, checkErr := findNewContainersHealth(ctx, info, docker, oldIDs, scaleN)
 		if checkErr != nil {
 			log.Warn("zero-downtime: health probe error", "err", checkErr)
 		} else if healthy {
 			log.Info("zero-downtime: healthy — removing old instance(s)",
-				"service", info.Service, "new_id", newID[:min(12, len(newID))])
+				"service", info.Service)
 			if err := removeContainers(ctx, oldIDs, docker, log); err != nil {
 				return "", backupPath, fmt.Errorf("zero-downtime: remove old containers: %w", err)
 			}
-			// Reset compose scale state to 1 (preserves the new container since we removed the old one)
-			_ = scaleCompose(ctx, info, 1, true, log)
-			return newID, backupPath, nil
+			// Reset compose scale state to scaleN (preserves the new containers since we removed the old ones)
+			_ = scaleCompose(ctx, info, scaleN, true, log)
+			
+			retID := ""
+			if len(newIDs) > 0 {
+				retID = newIDs[0]
+			}
+			return retID, backupPath, nil
 		}
 
 		select {
@@ -162,16 +172,19 @@ func scaleCompose(ctx context.Context, info *Info, n int, noRecreate bool, log *
 	return nil
 }
 
-// findNewestHealthy returns the ID and health status of the newest container
-// for the compose service (identified by creation timestamp).
-func findNewestHealthy(ctx context.Context, info *Info, docker dockerclient.Scoped) (id string, healthy bool, err error) {
+// findNewContainersHealth returns the IDs and health status of all containers
+// for the service that are NOT in oldIDs. It waits until expectedCount
+// containers are running and healthy.
+func findNewContainersHealth(ctx context.Context, info *Info, docker dockerclient.Scoped, oldIDs []string, expectedCount int) (newIDs []string, healthy bool, err error) {
 	containers, err := docker.ListContainers(ctx)
 	if err != nil {
-		return "", false, err
+		return nil, false, err
 	}
 
-	var newestID string
-	var newestCreated int64
+	oldMap := make(map[string]bool)
+	for _, id := range oldIDs {
+		oldMap[id] = true
+	}
 
 	for _, c := range containers {
 		if c.Labels["com.docker.compose.project"] != info.Project {
@@ -180,26 +193,36 @@ func findNewestHealthy(ctx context.Context, info *Info, docker dockerclient.Scop
 		if c.Labels["com.docker.compose.service"] != info.Service {
 			continue
 		}
-		if c.Created > newestCreated {
-			newestCreated = c.Created
-			newestID = c.ID
+		if !oldMap[c.ID] {
+			newIDs = append(newIDs, c.ID)
 		}
 	}
 
-	if newestID == "" {
-		return "", false, fmt.Errorf("no containers found for service %s", info.Service)
+	if len(newIDs) < expectedCount {
+		return newIDs, false, nil // Not all containers have started yet
 	}
 
-	detail, err := docker.InspectContainer(ctx, newestID)
-	if err != nil {
-		return newestID, false, err
+	for _, id := range newIDs {
+		detail, err := docker.InspectContainer(ctx, id)
+		if err != nil {
+			return newIDs, false, err
+		}
+
+		if detail.State.Health != nil {
+			if detail.State.Health.Status == "unhealthy" {
+				return newIDs, false, fmt.Errorf("container %s is unhealthy", id[:12])
+			}
+			if detail.State.Health.Status != "healthy" {
+				return newIDs, false, nil // Still starting or health probe in progress
+			}
+		} else {
+			if !detail.State.Running {
+				return newIDs, false, fmt.Errorf("container %s is not running", id[:12])
+			}
+		}
 	}
 
-	// No HEALTHCHECK defined → treat as healthy once running
-	if detail.State.Health == nil {
-		return newestID, detail.State.Running, nil
-	}
-	return newestID, detail.State.Health.Status == "healthy", nil
+	return newIDs, true, nil
 }
 
 func copyFile(src, dst string) error {
