@@ -25,8 +25,7 @@ import (
 	"github.com/soerjadi/dockwatch/internal/store"
 )
 
-// zeroDTDefaultTimeout is the default maximum wait time for zero-downtime updates.
-const zeroDTDefaultTimeout = 60 * time.Second
+
 
 // Strategy defines how aggressive automatic updates are for a container.
 type Strategy string
@@ -42,7 +41,7 @@ const (
 	labelKey           = "dockwatch.update"          // update strategy
 	labelWatch         = "dockwatch.watch"            // opt-out: set "false" to exclude container
 	labelComposeUpdate = "dockwatch.compose.update"   // "auto" enables compose-first path
-	labelZeroDT        = "dockwatch.zero-downtime"    // "true" enables zero-downtime mode (compose only)
+
 )
 
 // Executor subscribes to image.updated events and applies updates.
@@ -52,18 +51,15 @@ type Executor struct {
 	docker        dockerclient.Scoped
 	gh            *github.Client
 	history       *history.Store
-	zeroDTTimeout time.Duration
+
 	log           *slog.Logger
 	jobRegistry   *deploy.JobRegistry
 }
 
 // New creates an Executor. jobRegistry is injected so the executor can create
 // and track a DeployJob for every apply it performs.
-func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, zeroDTTimeout time.Duration, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Executor {
-	if zeroDTTimeout == 0 {
-		zeroDTTimeout = zeroDTDefaultTimeout
-	}
-	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, zeroDTTimeout: zeroDTTimeout, log: log, jobRegistry: jobRegistry}
+func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Executor {
+	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, log: log, jobRegistry: jobRegistry}
 }
 
 // Run starts the executor loop. Blocks until ctx is cancelled.
@@ -318,12 +314,7 @@ func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *sto
 			histDir = e.history.HistDir()
 		}
 
-		// Note: The custom zero-downtime scale hack was removed in favor of Docker Compose's
-		// native rolling updates (`update_config: order: start-first`). If the `dockwatch.zero-downtime`
-		// label is present, it is ignored here. `docker compose up -d` handles it natively.
-		if cs.Labels[labelZeroDT] == "true" {
-			e.log.Info("dockwatch.zero-downtime is deprecated for compose; relying on native update_config", "service", info.Service)
-		}
+
 
 		// Standard compose path: patch file + docker compose up -d
 		e.log.Info("applying compose update", "service", info.Service, "tag", newTag)

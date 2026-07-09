@@ -141,7 +141,7 @@ func main() {
 
 	w := watcher.New(dock, b, st, log)
 	jobRegistry := deploy.NewRegistry()
-	exec := executor.New(dock, b, st, gh, hist, cfg.ZeroDTTimeout, log, jobRegistry)
+	exec := executor.New(dock, b, st, gh, hist, log, jobRegistry)
 	hmon := healthmon.New(dock, b, st, log)
 	rb := rollback.New(dock, b, st, log)
 	ntfy := notifier.New(b, log)

@@ -60,11 +60,6 @@ type Config struct {
 	// Default: "/data/history"
 	HistoryDir string
 
-	// ZeroDTTimeout is how long to wait for a new container to become healthy
-	// before aborting a zero-downtime update and rolling back.
-	// Default: 60s
-	ZeroDTTimeout time.Duration
-
 	// AgentToken is the shared pre-authentication token used to authenticate
 	// remote agents connecting to the controller's WebSocket endpoint.
 	// If empty, any agent may connect (dev only — set in production).
@@ -114,7 +109,7 @@ func Load() *Config {
 		GitHubToken:   getEnv("GITHUB_TOKEN", ""),
 		HistoryDBPath: getEnv("DOCKWATCH_HISTORY_DB", "./data/dockwatch.db"),
 		HistoryDir:    getEnv("DOCKWATCH_HISTORY_DIR", "./data/history"),
-		ZeroDTTimeout: getDuration("DOCKWATCH_ZERO_DT_TIMEOUT", 60*time.Second),
+
 		AgentToken:    getEnv("DOCKWATCH_AGENT_TOKEN", ""),
 
 		DockerHubUsername: getEnv("DOCKWATCH_DOCKERHUB_USERNAME", ""),
