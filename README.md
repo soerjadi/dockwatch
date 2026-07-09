@@ -4,6 +4,21 @@
 
 ---
 
+## Why Dockwatch?
+
+While tools like Watchtower or standard Docker Compose are great for starting containers, Dockwatch acts as an **intelligent CI/CD automation pipeline** that sits *on top* of them. 
+
+Dockwatch bridges the gap between your CI/CD (like GitHub Actions) and your production servers with the following advantages:
+
+- **Automated Webhook Triggers:** Native webhooks (`/webhook/push`) instantly detect when your CI pushes a new image and trigger the deployment immediately, eliminating polling delays.
+- **AST YAML Patching:** Automatically edits your `docker-compose.yml` file to bump the `image:` tag to the new version *while preserving all of your comments and formatting*.
+- **Semver Strategy Controls:** Dockwatch reads image tags and can automatically block breaking changes (e.g., blocking a major version bump from `v1.2` to `v2.0`).
+- **History & Audit Logging:** Records every single deployment into a SQLite database. It saves a backup of your `docker-compose.yml` before every change, and logs the old digest, new digest, and timestamps.
+- **Multi-Host Orchestration:** If you have multiple servers, Dockwatch's WebSocket agent architecture allows a single webhook to instantly dispatch updates securely to all agents without opening inbound firewall ports on the agents.
+- **Direct Docker API Rollback:** For users not using Docker Compose, Docker Engine has zero native rollback capabilities. Dockwatch's `healthmon` and rollback engine provide a safety net by monitoring the container for 30s and automatically reverting to the previous digest if it becomes unhealthy.
+
+---
+
 ## High-Level Design
 
 ```
