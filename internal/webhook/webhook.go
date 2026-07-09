@@ -226,7 +226,24 @@ func (h *Handler) dispatch(image, tag, digest, source string) {
 		return
 	}
 
+	seenCompose := make(map[string]bool)
+
 	for _, cs := range affected {
+		// Deduplicate compose updates: if multiple replicas exist, we only need to trigger ONE update
+		// since compose updates apply to the entire service at once.
+		if cs.Labels["dockwatch.compose.update"] != "" {
+			project := cs.Labels["com.docker.compose.project"]
+			service := cs.Labels["com.docker.compose.service"]
+			if project != "" && service != "" {
+				key := project + "_" + service
+				if seenCompose[key] {
+					h.log.Debug("webhook: skipping duplicate event for compose replica", "container", cs.Name)
+					continue
+				}
+				seenCompose[key] = true
+			}
+		}
+
 		// Check trigger mode
 		if svc, ok := h.config.Get(cs.Name); ok && svc.TriggerMode == "poll" {
 			h.log.Info("webhook: ignored because service is in poll mode", "container", cs.Name)
