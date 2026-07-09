@@ -370,7 +370,7 @@ Per-container behaviour is controlled via Docker labels:
 | `dockwatch.update` | `auto` / `minor` / `patch` / `notify` | Update strategy |
 | `dockwatch.health.grace` | duration e.g. `60s` | Override health grace window |
 | `dockwatch.compose.update` | `auto` / `notify` | Enable compose-first update path (default: `notify`) |
-| `dockwatch.zero-downtime` | `true` | Enable zero-downtime mode (requires `dockwatch.compose.update=auto`) |
+| `dockwatch.zero-downtime` | `true` | **Deprecated:** Handled natively by Docker Compose (`update_config: start-first`) |
 
 **Update strategy rules:**
 
@@ -382,8 +382,16 @@ Per-container behaviour is controlled via Docker labels:
 **Compose update path** (`dockwatch.compose.update=auto`):  
 dockwatch edits the compose file in-place using an AST YAML parser (comments and formatting preserved), then runs `docker compose up -d --no-deps <service>`. Requires the compose file directory to be mounted writable.
 
-**Zero-downtime mode** (`dockwatch.zero-downtime=true`):  
-Scales the service to 2 replicas, waits for the new container to pass its health check (up to `DOCKWATCH_ZERO_DT_TIMEOUT`), then scales back to 1. Traefik auto-discovers both containers during the overlap window via existing labels — no reverse proxy reconfiguration needed. For Caddy or nginx, routing is the user's responsibility.
+**Zero-downtime mode**:  
+For Docker Compose updates, Dockwatch relies on Docker Compose's native rolling updates. To achieve zero-downtime, configure your `docker-compose.yml` with:
+```yaml
+deploy:
+  update_config:
+    order: start-first
+```
+Dockwatch will run `docker compose up -d`, and Docker Compose will natively spin up the new container, wait for it to be healthy, and then stop the old one.
+
+For direct Docker API updates, updates use `Recreate` which causes a brief downtime as the container restarts.
 
 ---
 
@@ -447,7 +455,7 @@ The agent reconnects automatically with exponential backoff if the controller is
 | Health monitor | ✅ Complete | Polls `InspectContainer` every 3 s; triggers rollback on `unhealthy` |
 | Rollback engine | ✅ Complete | Pulls previous digest, recreates container; publishes `rollback.done` |
 | Compose-first updater | ✅ Complete | AST YAML edit (comment-preserving) + `docker compose up -d --no-deps` |
-| Zero-downtime updates | ✅ Complete | Scale to 2 → health-check new container → scale back to 1 |
+| Zero-downtime updates | ✅ Complete | Relies on Docker Compose native `update_config: start-first` |
 | Persistent history | ✅ Complete | SQLite update log + compose file backups before each change |
 | Breaking-change detection | ✅ Complete | Major semver bump flagged; optional GitHub release note enrichment |
 | Multi-host agent | ✅ Complete | Outbound WebSocket agent binary; controller hub with dispatch API |

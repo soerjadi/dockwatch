@@ -318,13 +318,11 @@ func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *sto
 			histDir = e.history.HistDir()
 		}
 
-		// Zero-downtime path: scale-up → health-check → scale-down
+		// Note: The custom zero-downtime scale hack was removed in favor of Docker Compose's
+		// native rolling updates (`update_config: order: start-first`). If the `dockwatch.zero-downtime`
+		// label is present, it is ignored here. `docker compose up -d` handles it natively.
 		if cs.Labels[labelZeroDT] == "true" {
-			e.log.Info("applying zero-downtime compose update",
-				"service", info.Service, "tag", newTag)
-			newID, backupPath, err := compose.ZeroDowntimeUpdate(ctx, info, newTag, histDir,
-				compose.ZeroDTConfig{Timeout: e.zeroDTTimeout}, e.docker, e.log)
-			return newID, backupPath, err
+			e.log.Info("dockwatch.zero-downtime is deprecated for compose; relying on native update_config", "service", info.Service)
 		}
 
 		// Standard compose path: patch file + docker compose up -d

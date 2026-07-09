@@ -120,7 +120,7 @@ func (w *Watcher) handleImageEvent(ev dockerclient.Event) {
 func (w *Watcher) handleContainerEvent(ctx context.Context, ev dockerclient.Event) {
 	switch ev.Action {
 	case "start":
-		w.log.Info("container started", "name", ev.Name)
+		w.log.Info("container started", "name", ev.Name, "Container ID", ev.ID)
 		info, err := w.docker.InspectContainer(ctx, ev.ID)
 		if err != nil {
 			w.log.Warn("inspect on start failed", "name", ev.Name, "err", err)
