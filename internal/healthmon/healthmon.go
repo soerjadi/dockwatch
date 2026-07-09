@@ -73,6 +73,12 @@ func (m *Monitor) Run(ctx context.Context) {
 
 // startWatch begins monitoring a container for the grace window.
 func (m *Monitor) startWatch(parent context.Context, p bus.UpdateAppliedPayload) {
+	// Compose updates do not emit a ContainerID and are managed natively by Docker Compose.
+	if p.ContainerID == "" {
+		m.log.Info("skipping health watch for compose container (managed natively)", "service", p.ContainerName)
+		return
+	}
+
 	grace := m.graceFor(p.ContainerID)
 
 	m.mu.Lock()
