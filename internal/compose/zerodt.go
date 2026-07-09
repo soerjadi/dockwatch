@@ -148,6 +148,7 @@ func scaleCompose(ctx context.Context, info *Info, n int, noRecreate bool, log *
 	if noRecreate {
 		args = append(args, "--no-recreate")
 	}
+	args = append(args, info.Service)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = info.WorkingDir
 	var out bytes.Buffer
