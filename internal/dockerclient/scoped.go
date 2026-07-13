@@ -51,6 +51,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -156,7 +157,8 @@ func New(host string, dryRun bool, credsFor func(host string) (username, passwor
 }
 
 func (c *Client) ListContainers(ctx context.Context) ([]types.Container, error) {
-	return c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	f := filters.NewArgs(filters.Arg("label", "dockwatch.watch=true"))
+	return c.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: f})
 }
 
 func (c *Client) InspectContainer(ctx context.Context, id string) (types.ContainerJSON, error) {
@@ -164,7 +166,8 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (types.Contain
 }
 
 func (c *Client) StreamEvents(ctx context.Context) (<-chan Event, <-chan error) {
-	rawCh, errCh := c.cli.Events(ctx, events.ListOptions{})
+	f := filters.NewArgs(filters.Arg("label", "dockwatch.watch=true"))
+	rawCh, errCh := c.cli.Events(ctx, events.ListOptions{Filters: f})
 	out := make(chan Event)
 	go func() {
 		defer close(out)
