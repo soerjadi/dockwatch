@@ -85,7 +85,7 @@ func (p *Poller) poll(ctx context.Context) {
 			p.log.Warn("poller: registry check failed", "container", cs.Name, "image", cs.Image, "err", err)
 			continue
 		}
-		p.compareAndPublish(cs, digest)
+		p.compareAndPublish(cs, nil, digest)
 	}
 }
 
@@ -126,11 +126,21 @@ func (p *Poller) checkService(ctx context.Context, svc *serviceconfig.ServiceCon
 		return
 	}
 
-	p.compareAndPublish(cs, digest)
+	p.compareAndPublish(cs, svc, digest)
 }
 
-func (p *Poller) compareAndPublish(cs *store.ContainerState, digest string) {
+func (p *Poller) compareAndPublish(cs *store.ContainerState, svc *serviceconfig.ServiceConfig, digest string) {
 	current := cs.CurrentDigest()
+	if current == "" && svc != nil && svc.LastDigest != "" {
+		// Fallback to the last known digest from the service DB.
+		// This prevents dockwatch from triggering a redundant update on restart
+		// when the in-memory digest history is empty.
+		current = svc.LastDigest
+		
+		// Seed the in-memory store so it's not empty for subsequent checks
+		cs.PushDigest(cs.Image, current)
+	}
+
 	if digest == current {
 		p.log.Debug("poller: no update", "container", cs.Name)
 		return
