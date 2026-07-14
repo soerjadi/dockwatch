@@ -13,10 +13,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     ./cmd/dockwatch
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# docker:cli provides the docker CLI + compose plugin needed for the
-# compose-first updater. The dockwatch binary is statically linked (CGO_ENABLED=0)
-# so it runs fine in an Alpine-based image.
-FROM docker:cli
+# We use alpine:latest to guarantee the latest OS security patches, and
+# install docker-cli directly from the Alpine repositories.
+FROM alpine:latest
+RUN apk add --no-cache tzdata ca-certificates docker-cli curl && \
+    mkdir -p /usr/libexec/docker/cli-plugins && \
+    curl -sSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" -o /usr/libexec/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/libexec/docker/cli-plugins/docker-compose
 
 COPY --from=builder /dockwatch /usr/local/bin/dockwatch
 
