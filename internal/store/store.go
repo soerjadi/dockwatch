@@ -97,6 +97,18 @@ func (s *Store) Get(id string) *ContainerState {
 	return s.containers[id]
 }
 
+// GetByName returns the state for a container by name, or nil if not tracked.
+func (s *Store) GetByName(name string) *ContainerState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, cs := range s.containers {
+		if cs.Name == name {
+			return cs
+		}
+	}
+	return nil
+}
+
 // Rekey moves a container's state from oldID to newID, preserving its digest
 // history. Recreating a container (image update or rollback) produces a new
 // container ID; without re-keying, the ring buffer that powers rollback would

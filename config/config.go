@@ -5,6 +5,8 @@ package config
 import (
 	"os"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // Config holds all runtime configuration for dockwatch.
@@ -58,11 +60,6 @@ type Config struct {
 	// Default: "/data/history"
 	HistoryDir string
 
-	// ZeroDTTimeout is how long to wait for a new container to become healthy
-	// before aborting a zero-downtime update and rolling back.
-	// Default: 60s
-	ZeroDTTimeout time.Duration
-
 	// AgentToken is the shared pre-authentication token used to authenticate
 	// remote agents connecting to the controller's WebSocket endpoint.
 	// If empty, any agent may connect (dev only — set in production).
@@ -91,6 +88,9 @@ type Config struct {
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
+	// Attempt to load .env file; it's okay if it doesn't exist.
+	_ = godotenv.Load()
+
 	// DOCKWATCH_GHCR_TOKEN takes precedence; fall back to GITHUB_TOKEN so
 	// users who already set GITHUB_TOKEN for release notes don't need a second var.
 	ghcrToken := os.Getenv("DOCKWATCH_GHCR_TOKEN")
@@ -107,9 +107,9 @@ func Load() *Config {
 		DryRun:        getBool("DOCKWATCH_DRY_RUN", false),
 		WebhookSecret: getEnv("DOCKWATCH_WEBHOOK_SECRET", ""),
 		GitHubToken:   getEnv("GITHUB_TOKEN", ""),
-		HistoryDBPath: getEnv("DOCKWATCH_HISTORY_DB", "/data/dockwatch.db"),
-		HistoryDir:    getEnv("DOCKWATCH_HISTORY_DIR", "/data/history"),
-		ZeroDTTimeout: getDuration("DOCKWATCH_ZERO_DT_TIMEOUT", 60*time.Second),
+		HistoryDBPath: getEnv("DOCKWATCH_HISTORY_DB", "./data/dockwatch.db"),
+		HistoryDir:    getEnv("DOCKWATCH_HISTORY_DIR", "./data/history"),
+
 		AgentToken:    getEnv("DOCKWATCH_AGENT_TOKEN", ""),
 
 		DockerHubUsername: getEnv("DOCKWATCH_DOCKERHUB_USERNAME", ""),

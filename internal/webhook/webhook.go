@@ -36,6 +36,9 @@ import (
 	"time"
 
 	"github.com/soerjadi/dockwatch/internal/bus"
+	"github.com/soerjadi/dockwatch/internal/deploy"
+	"github.com/soerjadi/dockwatch/internal/history"
+	"github.com/soerjadi/dockwatch/internal/serviceconfig"
 	"github.com/soerjadi/dockwatch/internal/store"
 )
 
@@ -66,18 +69,20 @@ type DockerHubPayload struct {
 
 // Handler handles inbound webhook requests.
 type Handler struct {
-	bus    *bus.Bus
-	store  *store.Store
-	secret string
-	log    *slog.Logger
+	bus         *bus.Bus
+	store       *store.Store
+	secret      string
+	log         *slog.Logger
+	jobRegistry *deploy.JobRegistry
+	config      *serviceconfig.Manager
+	history     *history.Store
 }
 
-// New creates a Handler. secret is the HMAC shared secret; pass "" to skip validation.
-func New(b *bus.Bus, st *store.Store, secret string, log *slog.Logger) *Handler {
+func New(b *bus.Bus, st *store.Store, secret string, log *slog.Logger, jobRegistry *deploy.JobRegistry, config *serviceconfig.Manager, hist *history.Store) *Handler {
 	if secret == "" {
 		log.Warn("webhook secret is empty — signature validation disabled (not safe for production)")
 	}
-	return &Handler{bus: b, store: st, secret: secret, log: log}
+	return &Handler{bus: b, store: st, secret: secret, log: log, jobRegistry: jobRegistry, config: config, history: hist}
 }
 
 // RegisterRoutes mounts the webhook endpoints onto the given mux.
@@ -116,13 +121,48 @@ func (h *Handler) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// We also need to fail the API request if ANY container matches and is in poll mode.
+	// But it's easier to check upfront if any container is in poll mode.
+	affected := h.containersForImage(p.Image, p.Tag)
+	hasPollMode := false
+	for _, cs := range affected {
+		if svc, ok := h.config.Get(cs.Name); ok && svc.TriggerMode == "poll" {
+			hasPollMode = true
+			if h.history != nil {
+				if err := h.history.RecordSkipped(cs.Name, p.Image+":"+p.Tag,
+					"webhook rejected: service trigger_mode is poll"); err != nil {
+					h.log.Warn("history: failed to record skipped deploy", "container", cs.Name, "err", err)
+				}
+			}
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":        "deploy rejected: service is in poll mode",
+				"service":      cs.Name,
+				"trigger_mode": "poll",
+				"hint":         "::notice::dockwatch: " + cs.Name + " uses poll mode — webhook ignored",
+			})
+			return
+		}
+	}
+
 	h.dispatch(p.Image, p.Tag, p.Digest, p.Source)
+
+	// Create a queued DeployJob so the caller gets a deploy_id to track progress
+	// (AC#1). The executor will transition it to running/success/failed when it
+	// picks up the TopicImageUpdated event from the bus.
+	deployID := ""
+	if h.jobRegistry != nil && !hasPollMode {
+		job := deploy.NewJob(p.Image+":"+p.Tag, p.Image+":"+p.Tag, "webhook")
+		_ = h.jobRegistry.Register(job)
+		deployID = job.ID
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status": "accepted",
-		"image":  p.Image + ":" + p.Tag,
+		"deploy_id": deployID,
+		"status":    "queued",
+		"image":     p.Image + ":" + p.Tag,
 	})
 }
 
@@ -186,7 +226,30 @@ func (h *Handler) dispatch(image, tag, digest, source string) {
 		return
 	}
 
+	seenCompose := make(map[string]bool)
+
 	for _, cs := range affected {
+		// Deduplicate compose updates: if multiple replicas exist, we only need to trigger ONE update
+		// since compose updates apply to the entire service at once.
+		if cs.Labels["dockwatch.compose.update"] != "" {
+			project := cs.Labels["com.docker.compose.project"]
+			service := cs.Labels["com.docker.compose.service"]
+			if project != "" && service != "" {
+				key := project + "_" + service
+				if seenCompose[key] {
+					h.log.Debug("webhook: skipping duplicate event for compose replica", "container", cs.Name)
+					continue
+				}
+				seenCompose[key] = true
+			}
+		}
+
+		// Check trigger mode
+		if svc, ok := h.config.Get(cs.Name); ok && svc.TriggerMode == "poll" {
+			h.log.Info("webhook: ignored because service is in poll mode", "container", cs.Name)
+			continue
+		}
+
 		h.log.Info("webhook: publishing image.updated",
 			"container", cs.Name,
 			"image", fullImage,

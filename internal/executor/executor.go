@@ -18,14 +18,14 @@ import (
 
 	"github.com/soerjadi/dockwatch/internal/bus"
 	"github.com/soerjadi/dockwatch/internal/compose"
+	"github.com/soerjadi/dockwatch/internal/deploy"
 	"github.com/soerjadi/dockwatch/internal/dockerclient"
 	"github.com/soerjadi/dockwatch/internal/github"
 	"github.com/soerjadi/dockwatch/internal/history"
 	"github.com/soerjadi/dockwatch/internal/store"
 )
 
-// zeroDTDefaultTimeout is the default maximum wait time for zero-downtime updates.
-const zeroDTDefaultTimeout = 60 * time.Second
+
 
 // Strategy defines how aggressive automatic updates are for a container.
 type Strategy string
@@ -41,7 +41,7 @@ const (
 	labelKey           = "dockwatch.update"          // update strategy
 	labelWatch         = "dockwatch.watch"            // opt-out: set "false" to exclude container
 	labelComposeUpdate = "dockwatch.compose.update"   // "auto" enables compose-first path
-	labelZeroDT        = "dockwatch.zero-downtime"    // "true" enables zero-downtime mode (compose only)
+
 )
 
 // Executor subscribes to image.updated events and applies updates.
@@ -51,16 +51,15 @@ type Executor struct {
 	docker        dockerclient.Scoped
 	gh            *github.Client
 	history       *history.Store
-	zeroDTTimeout time.Duration
+
 	log           *slog.Logger
+	jobRegistry   *deploy.JobRegistry
 }
 
-// New creates an Executor.
-func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, zeroDTTimeout time.Duration, log *slog.Logger) *Executor {
-	if zeroDTTimeout == 0 {
-		zeroDTTimeout = zeroDTDefaultTimeout
-	}
-	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, zeroDTTimeout: zeroDTTimeout, log: log}
+// New creates an Executor. jobRegistry is injected so the executor can create
+// and track a DeployJob for every apply it performs.
+func New(docker dockerclient.Scoped, b *bus.Bus, st *store.Store, gh *github.Client, hist *history.Store, log *slog.Logger, jobRegistry *deploy.JobRegistry) *Executor {
+	return &Executor{bus: b, store: st, docker: docker, gh: gh, history: hist, log: log, jobRegistry: jobRegistry}
 }
 
 // Run starts the executor loop. Blocks until ctx is cancelled.
@@ -146,10 +145,59 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 		return
 	}
 
-	newID, backupPath, err := e.apply(ctx, p, cs)
+	// Create and register a DeployJob before applying. The trigger source for
+	// bus-driven updates is always "poll" (webhook handler registers its own job).
+	var job *deploy.DeployJob
+	if e.jobRegistry != nil {
+		job = deploy.NewJob(p.ContainerName, p.Image, "poll")
+		_ = e.jobRegistry.Register(job)
+		defer e.jobRegistry.Finish(job.ID)
+		job.Transition(deploy.StatusRunning)
+	}
+
+	// Record the deploy as "running" before the apply so every deploy has a row
+	// regardless of outcome. deploy_id links this row to the job for FinishDeploy.
+	if e.history != nil && job != nil {
+		snap := job.Snap()
+		if _, err := e.history.RecordDeploy(history.Entry{
+			AppName:       p.ContainerName,
+			Service:       p.ContainerName,
+			OldImage:      cs.Image,
+			NewImage:      p.Image,
+			ImageTag:      imageTag(p.Image),
+			DeployID:      job.ID,
+			TriggerSource: job.TriggerSource,
+			Status:        "running",
+			StartedAt:     snap.StartedAt,
+		}); err != nil {
+			e.log.Warn("history: failed to record deploy start", "container", p.ContainerName, "err", err)
+		}
+	}
+
+	newID, _, err := e.apply(ctx, p, cs, job)
 	if err != nil {
+		if job != nil {
+			job.Transition(deploy.StatusFailed)
+		}
 		e.log.Error("update failed", "container", p.ContainerName, "err", err)
+		if e.history != nil && job != nil {
+			if ferr := e.history.FinishDeploy(job.ID, "failed", time.Now()); ferr != nil {
+				e.log.Warn("history: failed to finish deploy", "container", p.ContainerName, "err", ferr)
+			}
+		}
 		return
+	}
+	if job != nil {
+		job.Transition(deploy.StatusSuccess)
+	}
+	if e.history != nil && job != nil {
+		endedAt := time.Now()
+		if snap := job.Snap(); snap.EndedAt != nil {
+			endedAt = *snap.EndedAt
+		}
+		if ferr := e.history.FinishDeploy(job.ID, "success", endedAt); ferr != nil {
+			e.log.Warn("history: failed to finish deploy", "container", p.ContainerName, "err", ferr)
+		}
 	}
 
 	// For the compose path newID is "" — watcher rebuilds state on container:start.
@@ -159,19 +207,6 @@ func (e *Executor) handle(ctx context.Context, p bus.ImageUpdatedPayload) {
 			moved = cs
 		}
 		moved.PushDigest(p.Image, p.NewDigest)
-	}
-
-	if e.history != nil {
-		if _, err := e.history.Record(history.Entry{
-			AppName:    p.ContainerName,
-			Service:    p.ContainerName,
-			OldImage:   cs.Image,
-			NewImage:   p.Image,
-			BackupPath: backupPath,
-			CreatedAt:  time.Now(),
-		}); err != nil {
-			e.log.Warn("history: failed to record update", "container", p.ContainerName, "err", err)
-		}
 	}
 
 	e.bus.Publish(bus.TopicUpdateApplied, bus.UpdateAppliedPayload{
@@ -269,7 +304,8 @@ func shortDigest(d string) string {
 // it uses the direct Docker API path (Recreate). Returns the new container ID
 // for the direct path, or "" for the compose path (the watcher rebuilds state
 // from the container:start event that compose triggers).
-func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *store.ContainerState) (string, string, error) {
+// job is passed through for log streaming and may be nil (direct/docker path).
+func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *store.ContainerState, job *deploy.DeployJob) (string, string, error) {
 	// Compose paths: edit compose file, run docker compose up
 	if info := compose.FromLabels(cs.Labels); info != nil && cs.Labels[labelComposeUpdate] == "auto" {
 		newTag := imageTag(p.Image)
@@ -278,18 +314,11 @@ func (e *Executor) apply(ctx context.Context, p bus.ImageUpdatedPayload, cs *sto
 			histDir = e.history.HistDir()
 		}
 
-		// Zero-downtime path: scale-up → health-check → scale-down
-		if cs.Labels[labelZeroDT] == "true" {
-			e.log.Info("applying zero-downtime compose update",
-				"service", info.Service, "tag", newTag)
-			backupPath, err := compose.ZeroDowntimeUpdate(ctx, info, newTag, histDir,
-				compose.ZeroDTConfig{Timeout: e.zeroDTTimeout}, e.docker, e.log)
-			return "", backupPath, err
-		}
+
 
 		// Standard compose path: patch file + docker compose up -d
 		e.log.Info("applying compose update", "service", info.Service, "tag", newTag)
-		backupPath, err := compose.ApplyUpdate(ctx, info, newTag, histDir, e.log)
+		backupPath, err := compose.ApplyUpdate(ctx, info, newTag, histDir, e.log, job)
 		return "", backupPath, err
 	}
 

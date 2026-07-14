@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/soerjadi/dockwatch/internal/deploy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,7 +17,9 @@ import (
 // patches the image tag, and runs docker compose up -d --no-deps.
 // Returns the backup path so the caller can record it in update history.
 // Returns ("", nil) in dry-run mode.
-func ApplyUpdate(ctx context.Context, info *Info, newTag, histDir string, log *slog.Logger) (string, error) {
+// job is optional (nil-safe): when non-nil, docker compose output is streamed
+// into job.AppendLog() line-by-line for live log visibility (AC#3).
+func ApplyUpdate(ctx context.Context, info *Info, newTag, histDir string, log *slog.Logger, job *deploy.DeployJob) (string, error) {
 	if len(info.ConfigFiles) == 0 {
 		return "", fmt.Errorf("compose apply: no config files in compose info")
 	}
@@ -29,7 +32,7 @@ func ApplyUpdate(ctx context.Context, info *Info, newTag, histDir string, log *s
 	if err := UpdateServiceImage(configFile, info.Service, newTag); err != nil {
 		return backupPath, err
 	}
-	if err := UpService(ctx, info.WorkingDir, configFile, info.Service, log); err != nil {
+	if err := UpService(ctx, info.WorkingDir, configFile, info.Service, log, job); err != nil {
 		return backupPath, err
 	}
 	return backupPath, nil
