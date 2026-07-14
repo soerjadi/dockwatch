@@ -6,8 +6,9 @@
 <p align="center">
   <a href="https://github.com/soerjadi/dockwatch/actions"><img src="https://img.shields.io/github/actions/workflow/status/soerjadi/dockwatch/build.yml?branch=main&label=build&logo=github&style=flat-square" alt="Build Status"></a>
   <a href="https://github.com/soerjadi/dockwatch/releases/latest"><img src="https://img.shields.io/github/release/soerjadi/dockwatch.svg?style=flat-square" alt="GitHub release"></a>
-  <a href="https://hub.docker.com/r/soerjadi/dockwatch/"><img src="https://img.shields.io/docker/pulls/soerjadi/dockwatch.svg?style=flat-square&logo=docker" alt="Docker Pulls"></a>
-  <a href="https://hub.docker.com/r/soerjadi/dockwatch/"><img src="https://img.shields.io/docker/stars/soerjadi/dockwatch.svg?style=flat-square&logo=docker" alt="Docker Stars"></a>
+  <a href="https://github.com/soerjadi/dockwatch/pkgs/container/dockwatch"><img src="https://img.shields.io/badge/GHCR-Available-181717?style=flat-square&logo=github" alt="GHCR"></a>
+  <a href="https://hub.docker.com/r/soerja/dockwatch/"><img src="https://img.shields.io/docker/pulls/soerja/dockwatch.svg?style=flat-square&logo=docker" alt="Docker Pulls"></a>
+  <a href="https://hub.docker.com/r/soerja/dockwatch/"><img src="https://img.shields.io/docker/stars/soerja/dockwatch.svg?style=flat-square&logo=docker" alt="Docker Stars"></a>
   <a href="https://goreportcard.com/report/github.com/soerjadi/dockwatch"><img src="https://goreportcard.com/badge/github.com/soerjadi/dockwatch?style=flat-square" alt="Go Report Card"></a>
 </p>
 
@@ -31,6 +32,10 @@ Dockwatch bridges the gap between your CI/CD (like GitHub Actions) and your prod
 
 ## Getting Started
 
+Dockwatch is available on both Docker Hub and GitHub Container Registry (GHCR):
+- **Docker Hub:** `soerja/dockwatch:latest`
+- **GHCR:** `ghcr.io/soerjadi/dockwatch:latest`
+
 ### Quick Start (Docker Run)
 
 ```bash
@@ -38,7 +43,7 @@ docker run -d \
   --name dockwatch \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -p 3010:3010 \
-  ghcr.io/soerjadi/dockwatch:latest
+  soerja/dockwatch:latest
 ```
 
 ### Quick Start (Docker Compose)
@@ -46,7 +51,7 @@ docker run -d \
 ```yaml
 services:
   dockwatch:
-    image: ghcr.io/soerjadi/dockwatch:latest
+    image: soerja/dockwatch:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
@@ -141,7 +146,7 @@ docker run -d \
   -e DOCKWATCH_AGENT_TOKEN=your-shared-secret \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /path/to/compose/projects:/projects \
-  ghcr.io/soerjadi/dockwatch:latest /usr/local/bin/agent
+  soerja/dockwatch:latest /usr/local/bin/agent
 ```
 
 **Dispatch an update to a specific host:**
