@@ -13,8 +13,6 @@
 //	                 Executor  HealthMon  Rollback  Notifier
 //	                     │         │          │         │
 //	                     └─────────┴──────────┴─────────►  API / SSE / Logs
-//
-// Single binary. No Kafka. No MQTT. No Redis. No polling (except registry fallback).
 package main
 
 import (
